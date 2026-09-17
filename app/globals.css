@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #EFF1EA;
+  background-image:
+    linear-gradient(rgba(27, 31, 28, 0.015) 1px, transparent 1px);
+  background-size: 100% 32px;
+}
+
+::selection {
+  background-color: #B23A28;
+  color: #FFFFFF;
+}
+
+:focus-visible {
+  outline: 2px solid #B23A28;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* thin manuscript-style scrollbar for horizontal issue rails etc */
+.desk-scroll::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+.desk-scroll::-webkit-scrollbar-thumb {
+  background-color: #DAD8CC;
+  border-radius: 999px;
+}
+
+.underline-squiggle {
+  background-image: repeating-linear-gradient(
+    -63deg,
+    #B23A28,
+    #B23A28 1.5px,
+    transparent 1.5px,
+    transparent 3px
+  );
+  background-position: 0 100%;
+  background-size: 4px 3px;
+  background-repeat: repeat-x;
+  padding-bottom: 2px;
+}
