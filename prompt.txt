@@ -1,0 +1,257 @@
+Act as a Senior Next.js + Gemini API Engineer.
+
+I have a Next.js 14 AI Text Fixer application deployed locally and eventually on Vercel.
+
+The application uploads a JPG/PNG/WEBP social media design and sends the image to the Gemini API for OCR, grammar checking, spelling checking, copy review, and corrected text.
+
+My current architecture is:
+
+app/api/analyze/route.ts
+        ↓
+lib/ai.ts
+        ↓
+Gemini REST API
+        ↓
+AiAnalysisSchema validation
+        ↓
+Frontend result
+
+My current Gemini implementation uses:
+
+const model = "gemini-3.6-flash";
+
+and:
+
+https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}
+
+PROBLEM:
+
+Sometimes Gemini returns:
+
+HTTP 503
+
+{
+  "error": {
+    "code": 503,
+    "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+    "status": "UNAVAILABLE"
+  }
+}
+
+My UI then shows:
+
+"We hit a snag
+Something went wrong while analyzing your design. Please try again."
+
+I want you to implement a production-quality Gemini API failover system.
+
+IMPORTANT:
+
+1. Do NOT expose API keys in frontend/client code.
+2. Do NOT hardcode API keys in TypeScript.
+3. Use environment variables.
+4. Keep all Gemini requests server-side.
+5. Preserve my existing AiAnalysisSchema and existing frontend response format.
+6. Do not modify route.ts unless absolutely necessary.
+7. Preserve my existing SYSTEM_PROMPT.
+8. Preserve image upload support for JPG, PNG and WEBP.
+9. Preserve Gemini structured JSON output.
+10. Preserve the existing AiAnalysisError class.
+11. Make the implementation compatible with Next.js 14 and Vercel.
+
+ENVIRONMENT VARIABLES:
+
+Use:
+
+GEMINI_API_KEY_1=
+GEMINI_API_KEY_2=
+GEMINI_API_KEY_3=
+
+Optionally support:
+
+GEMINI_API_KEY_4=
+GEMINI_API_KEY_5=
+
+The application should collect all configured keys into an array:
+
+const apiKeys = [
+  process.env.GEMINI_API_KEY_1,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
+  process.env.GEMINI_API_KEY_4,
+  process.env.GEMINI_API_KEY_5,
+].filter(Boolean);
+
+FAILOVER BEHAVIOR:
+
+Attempt API key 1 first.
+
+If the request succeeds:
+- return the validated AiAnalysis immediately.
+
+If Gemini returns a temporary provider error:
+- 503 UNAVAILABLE
+- 429 RESOURCE_EXHAUSTED
+- 500
+- 502
+- 504
+- timeout/network failure
+
+then retry using the next configured API key.
+
+Example:
+
+KEY 1 → 503
+KEY 2 → request
+KEY 2 → success
+→ return result
+
+If KEY 2 also fails:
+
+KEY 1 → 503
+KEY 2 → 503
+KEY 3 → success
+→ return result
+
+IMPORTANT SECURITY/QUOTA RULE:
+
+Do not describe multiple keys from the same Google Cloud project as increasing quota.
+
+Gemini rate limits are generally project-level, so this should be presented as provider/key failover rather than a method to bypass Google's rate limits.
+
+If the configured keys belong to the same project, explain that they do not provide independent project quotas.
+
+If separate legitimately owned projects are used, make the architecture configurable but do not encourage abuse or quota circumvention.
+
+RETRY STRATEGY:
+
+For each key:
+
+Attempt the request.
+
+For transient 503/429/5xx/network errors:
+- retry with exponential backoff
+- use jitter
+- maximum 2 retries per key
+- avoid infinite retries
+
+Example:
+
+attempt 1 → wait around 1 second
+attempt 2 → wait around 2 seconds
+attempt 3 → move to next key
+
+For a 400 or 403 error:
+- do NOT repeatedly retry the same key
+- record the error
+- move to the next configured key if appropriate
+
+For 401 authentication errors:
+- treat the key as invalid
+- immediately try the next configured key
+
+For 404 model-not-found:
+- do not rotate keys unnecessarily
+- report a configuration/model problem
+
+For 503:
+- retry current key briefly
+- then fail over to next key
+
+For 429:
+- retry according to Retry-After if available
+- then move to next key
+
+MODEL:
+
+Use:
+
+gemini-3.6-flash
+
+Keep the model configurable with:
+
+GEMINI_MODEL=gemini-3.6-flash
+
+Do not hardcode the model in multiple places.
+
+TIMEOUT:
+
+Each Gemini request should have an AbortController timeout around 30-45 seconds.
+
+LOGGING:
+
+Add safe server-side logs such as:
+
+Gemini attempt 1 using key 1
+Gemini returned 503
+Retrying key 1
+Switching to key 2
+Gemini request succeeded
+
+NEVER log:
+- the complete API key
+- the API key value
+- base64 image data
+- sensitive uploaded content
+
+If logging a key identifier, only show:
+
+key-1
+key-2
+key-3
+
+ERROR RESPONSE:
+
+If all configured keys fail, throw:
+
+AiAnalysisError(
+  "All configured AI providers are temporarily unavailable.",
+  ...
+)
+
+Do not fabricate an AI result.
+
+PRESERVE VALIDATION:
+
+After Gemini responds:
+
+const rawText =
+  json?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+Clean accidental markdown fences.
+
+JSON.parse()
+
+Then:
+
+const result = AiAnalysisSchema.safeParse(parsed);
+
+If validation succeeds:
+
+return result.data;
+
+If validation fails:
+- do not return malformed data
+- try another request/key if appropriate
+- otherwise throw AiAnalysisError
+
+IMPORTANT:
+
+Do not rewrite the whole application.
+
+Only modify lib/ai.ts and tell me exactly what needs to be added to .env.local and Vercel Environment Variables.
+
+Also provide:
+
+1. Complete replacement lib/ai.ts
+2. Exact .env.local example
+3. Exact Vercel environment variable setup
+4. Explanation of the failover flow
+5. Explanation of which errors trigger failover
+6. Explanation of which errors should NOT trigger failover
+7. Security considerations
+8. Any changes required in route.ts
+9. How to test KEY 1 failure and KEY 2 success locally
+10. How to verify from terminal logs that failover is working
+
+Do not remove my existing SYSTEM_PROMPT or AiAnalysisSchema integration.
