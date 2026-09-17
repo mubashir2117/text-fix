@@ -23,6 +23,7 @@ export const DEMO_RESULT: AnalysisResult = {
     {
       id: "issue-1",
       type: "capitalization",
+      category: "sentence_case",
       severity: "low",
       original: "Get started Today",
       correction: "Get Started Today",
@@ -37,6 +38,27 @@ export const DEMO_RESULT: AnalysisResult = {
       explanation: "The current CTA is generic. A more specific action tells people exactly what happens when they tap it.",
     },
   ],
+  textBlocks: [
+    { text: "Grow your business with right solution.", role: "headline", caseStyle: "sentence_case" },
+    { text: "Trusted by 10,000+ small teams worldwide", role: "subheadline", caseStyle: "sentence_case" },
+    { text: "Get started Today", role: "cta", caseStyle: "mixed_case" },
+  ],
+  keywordAnalysis: [
+    {
+      keyword: "brightpath",
+      detectedVariants: ["brightpath.io/start"],
+      recommendedForm: "brightpath.io/start",
+      consistent: true,
+    },
+  ],
+  caseAnalysis: {
+    detectedStyles: ["sentence_case", "mixed_case"],
+    sentenceCase: "pass",
+    titleCase: "pass",
+    keywordCapitalization: "pass",
+    properNouns: "pass",
+    overall: "pass",
+  },
   correctedText:
     "Grow your business with the right solution. Trusted by 10,000+ small teams worldwide. Get Started Today — brightpath.io/start",
   copyReview: {

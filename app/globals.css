@@ -11,21 +11,19 @@ html {
 }
 
 body {
-  background-color: #EFF1EA;
-  background-image:
-    linear-gradient(rgba(27, 31, 28, 0.015) 1px, transparent 1px);
-  background-size: 100% 32px;
+  background-color: #F7F5F1;
+  color: #1C1B19;
 }
 
 ::selection {
-  background-color: #B23A28;
+  background-color: rgba(179, 66, 47, 0.85);
   color: #FFFFFF;
 }
 
 :focus-visible {
-  outline: 2px solid #B23A28;
+  outline: 2px solid #1C1B19;
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -37,26 +35,12 @@ body {
   }
 }
 
-/* thin manuscript-style scrollbar for horizontal issue rails etc */
+/* thin scrollbar for horizontal rails */
 .desk-scroll::-webkit-scrollbar {
   height: 6px;
   width: 6px;
 }
 .desk-scroll::-webkit-scrollbar-thumb {
-  background-color: #DAD8CC;
+  background-color: #D9D5CD;
   border-radius: 999px;
-}
-
-.underline-squiggle {
-  background-image: repeating-linear-gradient(
-    -63deg,
-    #B23A28,
-    #B23A28 1.5px,
-    transparent 1.5px,
-    transparent 3px
-  );
-  background-position: 0 100%;
-  background-size: 4px 3px;
-  background-repeat: repeat-x;
-  padding-bottom: 2px;
 }

@@ -1,4 +1,4 @@
-import { AlertOctagon, AlertTriangle, Info, CircleDot } from "lucide-react";
+import { AlertOctagon, AlertTriangle, CircleDot, Info } from "lucide-react";
 import type { TextIssue } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -31,36 +31,53 @@ export function IssueCard({ issue }: IssueCardProps) {
   const { icon: Icon, tone, label } = severityConfig[issue.severity];
 
   return (
-    <div className="relative rounded-card border border-line bg-surface p-5 pl-6">
+    <article className="relative overflow-hidden rounded-panel border border-line bg-surface p-5 pl-6 shadow-soft">
       <span
         className={cn(
-          "absolute left-0 top-5 h-[calc(100%-2.5rem)] w-[3px] rounded-full",
-          issue.severity === "low" ? "bg-line" : tone === "pen" ? "bg-pen" : "bg-flag"
+          "absolute left-0 top-5 bottom-5 w-[3px] rounded-full",
+          issue.severity === "low"
+            ? "bg-line"
+            : tone === "pen"
+              ? "bg-pen"
+              : "bg-flag"
         )}
         aria-hidden="true"
       />
+
       <div className="flex flex-wrap items-center gap-2">
-        <Icon className={cn("h-4 w-4", tone === "pen" ? "text-pen" : tone === "flag" ? "text-flag" : "text-ink-faint")} aria-hidden="true" />
-        <span className="text-sm font-medium text-ink">{typeLabels[issue.type]}</span>
-        <Badge tone={tone}>{label} severity</Badge>
+        <Icon
+          className={cn(
+            "h-4 w-4",
+            tone === "pen" ? "text-pen" : tone === "flag" ? "text-flag" : "text-ink-faint"
+          )}
+          aria-hidden="true"
+        />
+        <span className="text-sm font-semibold text-ink">{typeLabels[issue.type]}</span>
+        <Badge tone={tone}>{label}</Badge>
       </div>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div>
-          <p className="text-xs text-ink-faint">Original</p>
-          <p className="mt-1 text-[15px] leading-relaxed text-ink-soft line-through decoration-pen/50">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
+            Original
+          </p>
+          <p className="mt-1.5 rounded-lg border border-line/70 bg-paper-dim/40 px-3 py-2 text-sm leading-relaxed text-ink-soft line-through decoration-pen/50 decoration-2">
             {issue.original}
           </p>
         </div>
         {issue.correction && (
           <div>
-            <p className="text-xs text-ink-faint">Suggestion</p>
-            <p className="mt-1 text-[15px] leading-relaxed text-ink">{issue.correction}</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
+              Suggested
+            </p>
+            <p className="mt-1.5 rounded-lg border border-approve/30 bg-approve-soft/50 px-3 py-2 text-sm font-medium leading-relaxed text-ink">
+              {issue.correction}
+            </p>
           </div>
         )}
       </div>
 
       <p className="mt-3 text-sm leading-relaxed text-ink-soft">{issue.explanation}</p>
-    </div>
+    </article>
   );
 }

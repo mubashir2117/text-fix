@@ -1,7 +1,7 @@
 export function SiteFooter() {
   return (
     <footer id="about" className="border-t border-line">
-      <div className="mx-auto max-w-6xl px-5 py-10 sm:px-8">
+      <div className="mx-auto max-w-[1200px] px-4 py-10 sm:px-6 lg:px-8">
         <div className="grid gap-8 sm:grid-cols-3">
           <div>
             <p className="font-serif text-base text-ink">AI Text Fixer</p>

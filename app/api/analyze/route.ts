@@ -73,6 +73,9 @@ export async function POST(req: NextRequest) {
       correctedText: analysis.correctedText,
       copyReview: analysis.copyReview,
       notes: analysis.notes,
+      textBlocks: analysis.textBlocks,
+      keywordAnalysis: analysis.keywordAnalysis,
+      caseAnalysis: analysis.caseAnalysis,
     };
 
     if (!result.hasReadableText) {

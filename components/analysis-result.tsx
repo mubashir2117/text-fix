@@ -1,11 +1,12 @@
 import type { AnalysisResult } from "@/lib/types";
 import { ImagePreview } from "@/components/image-preview";
-import { OverallStatus } from "@/components/overall-status";
-import { ExtractedText } from "@/components/extracted-text";
-import { CorrectionCard } from "@/components/correction-card";
-import { CopyReview } from "@/components/copy-review";
-import { IssueCard } from "@/components/issue-card";
 import { AnalysisSummary } from "@/components/analysis-summary";
+import { IssuesList } from "@/components/issues-list";
+import { ExtractedText } from "@/components/extracted-text";
+import { CorrectedCopy } from "@/components/corrected-copy";
+import { CopyReview } from "@/components/copy-review";
+import { CaseAnalysis } from "@/components/case-analysis";
+import { KeywordAnalysis } from "@/components/keyword-analysis";
 
 interface AnalysisResultViewProps {
   previewUrl: string;
@@ -13,46 +14,39 @@ interface AnalysisResultViewProps {
 }
 
 export function AnalysisResultView({ previewUrl, result }: AnalysisResultViewProps) {
-  const sortedIssues = [...result.issues].sort((a, b) => {
-    const order = { critical: 0, high: 1, medium: 2, low: 3 } as const;
-    return order[a.severity] - order[b.severity];
-  });
-
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,380px)_1fr] lg:items-start">
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
       <div className="lg:sticky lg:top-24">
         <ImagePreview src={previewUrl} />
+        {result.notes && (
+          <p className="mt-3 px-1 text-xs leading-relaxed text-ink-faint">{result.notes}</p>
+        )}
       </div>
 
-      <div className="flex flex-col gap-6">
-        <OverallStatus status={result.overallStatus} qualityScore={result.qualityScore} confidence={result.confidence} />
+      <div className="flex min-w-0 flex-col gap-6">
+        <AnalysisSummary
+          status={result.overallStatus}
+          qualityScore={result.qualityScore}
+          confidence={result.confidence}
+          ocrConfidence={result.ocrConfidence}
+          issueCount={result.issues.length}
+        />
 
-        {result.notes && (
-          <p className="rounded-card border border-line bg-paper-dim/60 px-4 py-3 text-sm text-ink-soft">
-            {result.notes}
-          </p>
-        )}
+        <IssuesList issues={result.issues} />
 
         <ExtractedText text={result.extractedText} ocrConfidence={result.ocrConfidence} />
 
-        {result.correctedText && <CorrectionCard correctedText={result.correctedText} />}
+        {result.correctedText && (
+          <CorrectedCopy
+            originalText={result.extractedText}
+            correctedText={result.correctedText}
+          />
+        )}
 
-        {sortedIssues.length > 0 && (
-          <section aria-labelledby="issues-heading" className="rounded-card border border-line bg-surface p-6">
-            <div className="flex items-baseline justify-between gap-4">
-              <h2 id="issues-heading" className="font-serif text-lg text-ink">
-                Issues found
-              </h2>
-            </div>
-            <div className="mt-1">
-              <AnalysisSummary issues={sortedIssues} />
-            </div>
-            <div className="mt-4 flex flex-col gap-3">
-              {sortedIssues.map((issue) => (
-                <IssueCard key={issue.id} issue={issue} />
-              ))}
-            </div>
-          </section>
+        {result.caseAnalysis && <CaseAnalysis analysis={result.caseAnalysis} />}
+
+        {result.keywordAnalysis && result.keywordAnalysis.length > 0 && (
+          <KeywordAnalysis entries={result.keywordAnalysis} />
         )}
 
         <CopyReview review={result.copyReview} />

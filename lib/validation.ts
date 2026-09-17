@@ -26,6 +26,8 @@ export const TextIssueSchema = z.object({
   original: z.string().min(1).max(400),
   correction: z.string().min(0).max(400),
   explanation: z.string().min(1).max(400),
+  // Optional finer-grained label, e.g. "sentence_case" under type "capitalization".
+  category: z.string().max(60).optional(),
 });
 
 export const CopyReviewSchema = z.object({
@@ -39,6 +41,38 @@ export const CopyReviewSchema = z.object({
   overall: z.string().min(1).max(500),
 });
 
+export const CaseStyleEnum = z.enum([
+  "sentence_case",
+  "title_case",
+  "all_caps",
+  "lowercase",
+  "mixed_case",
+]);
+
+export const TextBlockSchema = z.object({
+  text: z.string().max(400),
+  role: z.string().max(40), // e.g. "headline", "subheadline", "body", "cta", "label"
+  caseStyle: CaseStyleEnum,
+});
+
+export const KeywordAnalysisEntrySchema = z.object({
+  keyword: z.string().min(1).max(80),
+  detectedVariants: z.array(z.string().max(80)).min(1).max(10),
+  recommendedForm: z.string().min(1).max(80),
+  consistent: z.boolean(),
+});
+
+export const CaseCheckEnum = z.enum(["pass", "warning", "fail"]);
+
+export const CaseAnalysisSchema = z.object({
+  detectedStyles: z.array(CaseStyleEnum).max(5),
+  sentenceCase: CaseCheckEnum,
+  titleCase: CaseCheckEnum,
+  keywordCapitalization: CaseCheckEnum,
+  properNouns: CaseCheckEnum,
+  overall: CaseCheckEnum,
+});
+
 export const AiAnalysisSchema = z.object({
   overallStatus: z.enum(["correct", "needs_improvement", "incorrect"]),
   confidence: z.number().min(0).max(1),
@@ -50,6 +84,12 @@ export const AiAnalysisSchema = z.object({
   correctedText: z.string().max(4000),
   copyReview: CopyReviewSchema,
   notes: z.string().max(500).optional(),
+  // Additive fields for the case/capitalization + keyword-consistency
+  // features. Optional so older callers and cached history entries
+  // that predate these fields keep validating.
+  textBlocks: z.array(TextBlockSchema).max(60).optional(),
+  keywordAnalysis: z.array(KeywordAnalysisEntrySchema).max(30).optional(),
+  caseAnalysis: CaseAnalysisSchema.optional(),
 });
 
 export type AiAnalysis = z.infer<typeof AiAnalysisSchema>;

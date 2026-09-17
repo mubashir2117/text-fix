@@ -3,17 +3,23 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { UploadDropzone } from "@/components/upload-dropzone";
+import { UploadZone } from "@/components/upload-zone";
 import { ImagePreview } from "@/components/image-preview";
 import { AnalysisLoader } from "@/components/analysis-loader";
 import { AnalysisResultView } from "@/components/analysis-result";
-import { ErrorState } from "@/components/error-state";
+import { AnalysisError } from "@/components/analysis-error";
 import { Button } from "@/components/ui/button";
-import type { AnalysisResult, AppState } from "@/lib/types";
-import { fileToDataUrl } from "@/lib/utils";
+import { PasteScreenshotButton, useClipboardPaste } from "@/components/screenshot-paste";
+import { ScanLine, RotateCcw, Sparkles } from "lucide-react";
+import type {
+  AnalysisResult,
+  AppState,
+  ImageSource,
+  AnalysisErrorVariant,
+} from "@/lib/types";
+import { fileToDataUrl, formatBytes } from "@/lib/utils";
 import { saveHistoryEntry } from "@/lib/history";
 import { DEMO_IMAGE_SRC, DEMO_FILE_NAME, DEMO_RESULT } from "@/lib/demo";
-import { RotateCcw, Sparkles } from "lucide-react";
 
 function AnalyzePageInner() {
   const [state, setState] = useState<AppState>({ status: "idle" });
@@ -31,38 +37,47 @@ function AnalyzePageInner() {
         body: formData,
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
 
-      if (!response.ok && !data?.result) {
-        setState({ status: "error", previewUrl, message: data?.error ?? "Something went wrong while analyzing your design. Please try again." });
+      if (!response.ok || !data?.result) {
+        const status = response.status;
+        let variant: AnalysisErrorVariant = "generic";
+        if (status === 429 || status >= 500) variant = "busy";
+        else if (status === 400) variant = "invalid";
+        setState({
+          status: "error",
+          file,
+          previewUrl,
+          variant,
+          message: data?.error,
+        });
         return;
       }
 
       const result = data.result as AnalysisResult;
 
       if (!result.hasReadableText) {
-        toast.warning("We couldn't confidently detect readable text in this design.");
+        setState({ status: "error", file, previewUrl, variant: "no-text" });
+        return;
       }
 
       setState({ status: "result", previewUrl, result, fileName: file.name });
 
       const thumbnailDataUrl = await fileToDataUrl(file).catch(() => previewUrl);
       saveHistoryEntry({ fileName: file.name, thumbnailDataUrl, result });
-    } catch (err) {
-      setState({
-        status: "error",
-        previewUrl,
-        message: "Connection problem. Please check your internet connection and try again.",
-      });
+    } catch {
+      setState({ status: "error", file, previewUrl, variant: "network" });
     }
   }, []);
 
-  const handleFileSelected = useCallback(
-    (file: File) => {
-      const previewUrl = URL.createObjectURL(file);
-      setState({ status: "preview", file, previewUrl });
-    },
-    []
+  const handleFileSelected = useCallback((file: File, source: ImageSource = "upload") => {
+    const previewUrl = URL.createObjectURL(file);
+    setState({ status: "preview", file, previewUrl, source });
+  }, []);
+
+  useClipboardPaste(
+    useCallback((file: File) => handleFileSelected(file, "paste"), [handleFileSelected]),
+    state.status === "idle"
   );
 
   const handleAnalyzeClick = useCallback(() => {
@@ -74,45 +89,69 @@ function AnalyzePageInner() {
     setState({ status: "idle" });
   }, []);
 
+  const handleErrorPrimary = useCallback(() => {
+    if (
+      state.status === "error" &&
+      (state.variant === "busy" || state.variant === "network" || state.variant === "generic") &&
+      state.file &&
+      state.previewUrl
+    ) {
+      runAnalysis(state.file, state.previewUrl);
+      return;
+    }
+    handleReset();
+  }, [state, runAnalysis, handleReset]);
+
   const handleTryExample = useCallback(async () => {
     setState({ status: "analyzing", previewUrl: DEMO_IMAGE_SRC, stage: 0 });
     await new Promise((resolve) => setTimeout(resolve, 2200));
-    setState({ status: "result", previewUrl: DEMO_IMAGE_SRC, result: DEMO_RESULT, fileName: DEMO_FILE_NAME });
+    setState({
+      status: "result",
+      previewUrl: DEMO_IMAGE_SRC,
+      result: DEMO_RESULT,
+      fileName: DEMO_FILE_NAME,
+    });
   }, []);
 
   useEffect(() => {
     if (searchParams.get("demo") === "1" && state.status === "idle") {
       handleTryExample();
     }
+    if (searchParams.get("paste") === "1" && state.status === "idle") {
+      toast.info("Press Ctrl+V (or Cmd+V on Mac) to paste your screenshot.");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-12 sm:px-8 sm:py-16">
-      <div className="mb-10 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="font-serif text-3xl text-ink sm:text-4xl">Analyze a design</h1>
-          <p className="mt-2 max-w-lg text-ink-soft">
-            Upload the image exactly as it will be posted. AI reads the visible text and reports back.
-          </p>
-        </div>
-        {state.status !== "idle" && (
-          <Button variant="ghost" size="sm" onClick={handleReset}>
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Start over
-          </Button>
-        )}
+    <div className="mx-auto max-w-[1200px] px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
+      <div className="mx-auto max-w-2xl text-center">
+        <h1 className="font-serif text-4xl leading-tight tracking-tight text-ink sm:text-5xl">
+          Is your design copy correct?
+        </h1>
+        <p className="mx-auto mt-4 max-w-xl text-base leading-relaxed text-ink-soft sm:text-lg">
+          Upload your design and let AI check spelling, grammar, capitalization, clarity and
+          marketing copy.
+        </p>
       </div>
 
       {state.status === "idle" && (
-        <div className="flex flex-col gap-4">
-          <UploadDropzone onFileSelected={handleFileSelected} />
-          <div className="flex items-center justify-center gap-2 text-sm text-ink-soft">
+        <div className="mx-auto mt-10 flex max-w-3xl flex-col gap-6">
+          <UploadZone onFileSelected={(file) => handleFileSelected(file, "upload")} />
+
+          <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+            <PasteScreenshotButton onImage={(file) => handleFileSelected(file, "paste")} />
+            <span className="text-xs text-ink-faint">
+              Tip: paste a screenshot directly with Ctrl+V (Cmd+V on Mac)
+            </span>
+          </div>
+
+          <div className="flex items-center justify-center gap-1.5 text-sm text-ink-soft">
             <span>Don't have a design handy?</span>
             <button
               type="button"
               onClick={handleTryExample}
-              className="inline-flex items-center gap-1 font-medium text-pen underline-offset-4 hover:underline"
+              className="inline-flex items-center gap-1 font-medium text-ink underline-offset-4 hover:underline"
             >
               <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
               Try an example
@@ -122,38 +161,82 @@ function AnalyzePageInner() {
       )}
 
       {state.status === "preview" && (
-        <div className="flex flex-col items-center gap-6">
-          <div className="w-full max-w-sm">
-            <ImagePreview src={state.previewUrl} />
+        <div className="mt-10 grid gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
+          <div className="lg:sticky lg:top-24">
+            <ImagePreview src={state.previewUrl} alt={`Uploaded design ${state.file.name}`} />
+            <div className="mt-3 flex items-center justify-between gap-3 px-1 text-xs text-ink-faint">
+              <span className="truncate">{state.file.name}</span>
+              <span className="shrink-0">{formatBytes(state.file.size)}</span>
+            </div>
+            {state.source === "paste" && (
+              <p className="mt-2 px-1 text-xs font-medium text-approve">Screenshot pasted</p>
+            )}
           </div>
-          <div className="flex gap-3">
-            <Button variant="secondary" onClick={handleReset}>
-              Choose a different image
-            </Button>
-            <Button onClick={handleAnalyzeClick}>Analyze design</Button>
+
+          <div className="rounded-panel border border-line bg-surface p-6 shadow-desk animate-fade-in sm:p-8">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-paper">
+              <ScanLine className="h-5 w-5 text-ink" aria-hidden="true" />
+            </div>
+            <h2 className="mt-4 text-lg font-semibold tracking-tight text-ink">
+              Ready to analyze
+            </h2>
+            <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
+              We'll read the visible text and check spelling, grammar, capitalization, clarity,
+              and marketing copy — then give you a corrected version.
+            </p>
+
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+              <Button onClick={handleAnalyzeClick} className="flex-1">
+                Analyze Design
+              </Button>
+              <Button variant="secondary" onClick={handleReset} className="flex-1 sm:flex-none">
+                Choose a different image
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
-      {state.status === "analyzing" && <AnalysisLoader />}
+      {state.status === "analyzing" && (
+        <div className="mt-10 grid gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
+          {state.previewUrl && (
+            <div className="order-first lg:sticky lg:top-24">
+              <ImagePreview src={state.previewUrl} className="opacity-90" />
+            </div>
+          )}
+          <div>
+            <AnalysisLoader />
+          </div>
+        </div>
+      )}
 
       {state.status === "result" && (
-        <div>
-          <p className="mb-6 rounded-card border border-line bg-paper-dim/50 px-4 py-2.5 text-sm text-ink-soft">
-            {state.fileName === DEMO_FILE_NAME ? "Showing example results." : `Results for ${state.fileName}`}
-          </p>
+        <div className="mt-10">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-ink-faint">
+              {state.fileName === DEMO_FILE_NAME ? "Showing example results." : `Results for ${state.fileName}`}
+            </p>
+            <Button variant="ghost" size="sm" onClick={handleReset}>
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              New analysis
+            </Button>
+          </div>
           <AnalysisResultView previewUrl={state.previewUrl} result={state.result} />
         </div>
       )}
 
       {state.status === "error" && (
-        <div className="flex flex-col items-center gap-6">
+        <div className="mt-10 flex flex-col items-center gap-8">
           {state.previewUrl && (
-            <div className="w-full max-w-sm opacity-70">
-              <ImagePreview src={state.previewUrl} />
+            <div className="w-full max-w-sm">
+              <ImagePreview src={state.previewUrl} className="opacity-90" />
             </div>
           )}
-          <ErrorState message={state.message} onRetry={handleReset} />
+          <AnalysisError
+            variant={state.variant}
+            onPrimary={handleErrorPrimary}
+            onSecondary={handleReset}
+          />
         </div>
       )}
     </div>
