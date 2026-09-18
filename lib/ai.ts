@@ -123,6 +123,12 @@ function getModel(): string {
   return (process.env.GEMINI_MODEL && process.env.GEMINI_MODEL.trim()) || "gemini-3.6-flash";
 }
 
+/** Optional — tried only after every key has failed against GEMINI_MODEL with a non-fatal error. */
+function getFallbackModel(): string | undefined {
+  const value = process.env.GEMINI_MODEL_FALLBACK?.trim();
+  return value ? value : undefined;
+}
+
 // --- Logging (never logs key values or image data) ----------------------
 
 function log(message: string) {
@@ -374,6 +380,45 @@ async function runWithKey(
   return { ok: false, errorClass: "failover-now", message: lastMessage };
 }
 
+// --- Try every configured key against one model ---------------------------
+
+interface AllKeysOutcome {
+  ok: boolean;
+  data?: AiAnalysis;
+  fatal: boolean;
+  failures: string[];
+}
+
+async function attemptAllKeysForModel(
+  keys: ConfiguredKey[],
+  model: string,
+  base64Data: string,
+  mimeType: string
+): Promise<AllKeysOutcome> {
+  const failures: string[] = [];
+
+  for (let i = 0; i < keys.length; i++) {
+    const configuredKey = keys[i];
+    const result = await runWithKey(configuredKey, model, base64Data, mimeType);
+
+    if (result.ok) {
+      return { ok: true, data: result.data, fatal: false, failures };
+    }
+
+    failures.push(`${configuredKey.label}: ${result.message}`);
+
+    if (result.errorClass === "fatal") {
+      return { ok: false, fatal: true, failures };
+    }
+
+    if (i < keys.length - 1) {
+      log(`Switching to ${keys[i + 1].label}`);
+    }
+  }
+
+  return { ok: false, fatal: false, failures };
+}
+
 // --- Public entry point ----------------------------------------------------
 
 interface AnalyzeImageInput {
@@ -384,43 +429,65 @@ interface AnalyzeImageInput {
 /**
  * Runs the configured Gemini key(s) against one image, failing over to
  * the next key on transient errors, and returns a validated AiAnalysis.
+ *
+ * If GEMINI_MODEL_FALLBACK is set and EVERY key fails against the
+ * primary GEMINI_MODEL for a non-fatal reason (e.g. sustained 503s —
+ * the whole model tier is under demand pressure, not just one key),
+ * the full key list is tried again against the fallback model before
+ * giving up. This is separate from key failover: it's model failover,
+ * for the case where the bottleneck is Google's capacity for that
+ * specific model rather than any one API key.
+ *
  * Throws AiAnalysisError — and never fabricates a result — if every
- * configured key fails, or if the failure is a fatal (non-key-specific)
- * configuration problem such as an unknown model name.
+ * key fails against every configured model, or if the failure is a
+ * fatal (non-key-specific) configuration problem such as an unknown
+ * model name.
  */
 export async function analyzeImageWithAi({ base64Data, mimeType }: AnalyzeImageInput): Promise<AiAnalysis> {
   const keys = getConfiguredKeys();
   const model = getModel();
+  const fallbackModel = getFallbackModel();
 
   if (keys.length === 0) {
     throw new AiAnalysisError("The AI provider is not configured on the server.");
   }
 
-  const failures: string[] = [];
+  log(`Trying model "${model}" across ${keys.length} configured key(s)`);
+  const primaryOutcome = await attemptAllKeysForModel(keys, model, base64Data, mimeType);
 
-  for (let i = 0; i < keys.length; i++) {
-    const configuredKey = keys[i];
-    const result = await runWithKey(configuredKey, model, base64Data, mimeType);
+  if (primaryOutcome.ok && primaryOutcome.data) {
+    return primaryOutcome.data;
+  }
 
-    if (result.ok) {
-      return result.data;
+  if (primaryOutcome.fatal) {
+    logError(`Fatal configuration error on model "${model}" — not attempting further keys or models: ${primaryOutcome.failures.join(" | ")}`);
+    throw new AiAnalysisError(
+      "The AI provider is misconfigured (unknown model). Please check the server configuration.",
+      primaryOutcome.failures
+    );
+  }
+
+  const allFailures = [...primaryOutcome.failures];
+
+  if (fallbackModel && fallbackModel !== model) {
+    logError(`All keys failed on model "${model}" — trying fallback model "${fallbackModel}"`);
+    const fallbackOutcome = await attemptAllKeysForModel(keys, fallbackModel, base64Data, mimeType);
+
+    if (fallbackOutcome.ok && fallbackOutcome.data) {
+      return fallbackOutcome.data;
     }
 
-    failures.push(`${configuredKey.label}: ${result.message}`);
+    allFailures.push(...fallbackOutcome.failures.map((f) => `[fallback model] ${f}`));
 
-    if (result.errorClass === "fatal") {
-      logError(`Fatal configuration error — not attempting further keys: ${result.message}`);
+    if (fallbackOutcome.fatal) {
+      logError(`Fatal configuration error on fallback model "${fallbackModel}": ${fallbackOutcome.failures.join(" | ")}`);
       throw new AiAnalysisError(
-        "The AI provider is misconfigured (unknown model). Please check the server configuration.",
-        failures
+        "The AI provider is misconfigured (unknown fallback model). Please check the server configuration.",
+        allFailures
       );
-    }
-
-    if (i < keys.length - 1) {
-      log(`Switching to ${keys[i + 1].label}`);
     }
   }
 
-  logError(`All ${keys.length} configured key(s) failed: ${failures.join(" | ")}`);
-  throw new AiAnalysisError("All configured AI providers are temporarily unavailable.", failures);
+  logError(`All configured key(s) and model(s) failed: ${allFailures.join(" | ")}`);
+  throw new AiAnalysisError("All configured AI providers are temporarily unavailable.", allFailures);
 }

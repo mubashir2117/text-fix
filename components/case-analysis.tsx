@@ -33,12 +33,9 @@ export function CaseAnalysis({ analysis }: CaseAnalysisProps) {
   const OverallIcon = overall.icon;
 
   return (
-    <section
-      aria-labelledby="case-analysis-heading"
-      className="rounded-panel border border-line bg-surface p-6 shadow-soft animate-fade-up"
-    >
+    <section aria-labelledby="case-analysis-heading" className="rounded-card border border-line bg-surface p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="case-analysis-heading" className="text-base font-semibold tracking-tight text-ink">
+        <h2 id="case-analysis-heading" className="font-serif text-lg text-ink">
           Case &amp; capitalization
         </h2>
         <Badge tone={overall.tone}>

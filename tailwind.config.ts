@@ -9,24 +9,24 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        paper: "#F7F5F1",
-        "paper-dim": "#EFECE5",
+        paper: "#EFF1EA",
+        "paper-dim": "#E6E8DF",
         surface: "#FFFFFF",
-        ink: "#1C1B19",
-        "ink-soft": "#52504B",
-        "ink-faint": "#8A8780",
-        line: "#E6E2DA",
+        ink: "#1B1F1C",
+        "ink-soft": "#4B5148",
+        "ink-faint": "#8A8F82",
+        line: "#DAD8CC",
         pen: {
-          DEFAULT: "#B3422F",
-          soft: "#F7E4DE",
+          DEFAULT: "#B23A28",
+          soft: "#F1DAD3",
         },
         approve: {
-          DEFAULT: "#2E6B4E",
-          soft: "#E2EEE6",
+          DEFAULT: "#2E6E49",
+          soft: "#DCE9DD",
         },
         flag: {
-          DEFAULT: "#9A6B0B",
-          soft: "#F4E9D2",
+          DEFAULT: "#A8730C",
+          soft: "#F0E3C6",
         },
       },
       fontFamily: {
@@ -34,41 +34,28 @@ const config: Config = {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
       boxShadow: {
-        desk: "0 1px 2px rgba(28, 27, 25, 0.05), 0 12px 32px -16px rgba(28, 27, 25, 0.16)",
-        soft: "0 1px 2px rgba(28, 27, 25, 0.04), 0 4px 16px -8px rgba(28, 27, 25, 0.12)",
+        desk: "0 1px 2px rgba(27, 31, 28, 0.06), 0 8px 24px -12px rgba(27, 31, 28, 0.18)",
       },
       borderRadius: {
-        card: "12px",
-        panel: "20px",
+        card: "10px",
       },
       keyframes: {
         "fade-up": {
-          "0%": { opacity: "0", transform: "translateY(8px)" },
+          "0%": { opacity: "0", transform: "translateY(6px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
-        },
-        "fade-in": {
-          "0%": { opacity: "0" },
-          "100%": { opacity: "1" },
-        },
-        "scale-in": {
-          "0%": { opacity: "0", transform: "scale(0.98)" },
-          "100%": { opacity: "1", transform: "scale(1)" },
         },
         "pulse-soft": {
           "0%, 100%": { opacity: "1" },
-          "50%": { opacity: "0.4" },
+          "50%": { opacity: "0.45" },
         },
-        scan: {
-          "0%": { transform: "translateX(-100%)" },
-          "100%": { transform: "translateX(100%)" },
+        "write-line": {
+          "0%": { strokeDashoffset: "1" },
+          "100%": { strokeDashoffset: "0" },
         },
       },
       animation: {
         "fade-up": "fade-up 0.5s ease-out both",
-        "fade-in": "fade-in 0.4s ease-out both",
-        "scale-in": "scale-in 0.35s ease-out both",
         "pulse-soft": "pulse-soft 1.6s ease-in-out infinite",
-        scan: "scan 1.8s ease-in-out infinite",
       },
     },
   },

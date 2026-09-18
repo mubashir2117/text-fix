@@ -1,12 +1,5 @@
 export type OverallStatus = "correct" | "needs_improvement" | "incorrect";
 
-export type AnalysisErrorVariant =
-  | "busy"
-  | "invalid"
-  | "network"
-  | "no-text"
-  | "generic";
-
 export type IssueType =
   | "spelling"
   | "grammar"
@@ -28,6 +21,7 @@ export interface TextIssue {
   original: string;
   correction: string;
   explanation: string;
+  /** Optional finer-grained label, e.g. "sentence_case" under type "capitalization". */
   category?: string;
 }
 
@@ -46,7 +40,7 @@ export type CaseStyle = "sentence_case" | "title_case" | "all_caps" | "lowercase
 
 export interface TextBlock {
   text: string;
-  role: string;
+  role: string; // "headline" | "subheadline" | "body" | "cta" | "label" | ...
   caseStyle: CaseStyle;
 }
 
@@ -70,15 +64,18 @@ export interface CaseAnalysis {
 
 export interface AnalysisResult {
   overallStatus: OverallStatus;
-  confidence: number;
-  qualityScore: number;
-  ocrConfidence: number;
+  confidence: number; // 0 to 1
+  qualityScore: number; // 0 to 100
+  ocrConfidence: number; // 0 to 1
   extractedText: string;
   hasReadableText: boolean;
   issues: TextIssue[];
   correctedText: string;
   copyReview: CopyReview;
   notes?: string;
+  // Additive: case/capitalization + keyword-consistency analysis.
+  // Optional so history entries saved before these fields existed
+  // still render (components check for presence before rendering).
   textBlocks?: TextBlock[];
   keywordAnalysis?: KeywordAnalysisEntry[];
   caseAnalysis?: CaseAnalysis;
@@ -99,10 +96,4 @@ export type AppState =
   | { status: "preview"; file: File; previewUrl: string; source: ImageSource }
   | { status: "analyzing"; previewUrl: string; stage: number }
   | { status: "result"; previewUrl: string; result: AnalysisResult; fileName: string }
-  | {
-      status: "error";
-      file: File | null;
-      previewUrl: string | null;
-      variant: AnalysisErrorVariant;
-      message?: string;
-    };
+  | { status: "error"; file: File | null; previewUrl: string | null; message: string };

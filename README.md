@@ -31,6 +31,7 @@ Open http://localhost:3000.
 | `GEMINI_API_KEY_1` | Yes | Server-side only. Primary Gemini API key. |
 | `GEMINI_API_KEY_2` … `GEMINI_API_KEY_5` | No | Additional keys tried in order if an earlier key hits a transient error. |
 | `GEMINI_MODEL` | No | Defaults to `gemini-3.6-flash`. Confirm this exact model name is available to your key/API version — a wrong name fails fast with a clear config error rather than retrying every key (see "Gemini failover" below). |
+| `GEMINI_MODEL_FALLBACK` | No | Only tried if **every** key fails against `GEMINI_MODEL` for a non-fatal reason (sustained 503/429/5xx). Useful when a whole model tier — not just one key — is under demand pressure; point it at a different tier, e.g. `gemini-3.1-flash-lite`. |
 
 `.env.local` is already listed in `.gitignore` — never commit real API keys.
 
@@ -104,6 +105,16 @@ value, and never the base64 image payload:
 2. Run `npm run dev` and upload an image on `/analyze`.
 3. Watch the terminal: you should see `key-1 -> Gemini returned 401 ...` followed immediately by `Switching to key-2` and then `Request succeeded using key-2` — with the UI still returning a normal result, no error shown to the user.
 4. To simulate a 503 instead of an outright invalid key, temporarily point `GEMINI_API_KEY_1` at a key that's over its project quota (or has been suspended) so Gemini itself returns 503/429 — you should see the retry-with-backoff lines before it switches keys.
+
+### If you're seeing "AI service is temporarily busy"
+
+That message means **every** configured key failed against the configured model — the app is refusing to fabricate a result rather than showing a fake analysis. To find the actual cause:
+
+1. Open your Vercel project → **Logs** (or your terminal if running locally) and look for the `[gemini]` lines from the request that just failed. The last line before the final error tells you exactly what happened per key — e.g. all keys hit 503, or one hit 401.
+2. **All keys hit 401** → your keys aren't set correctly in this environment. Double check `GEMINI_API_KEY_1` (etc.) are present under the right Vercel environment (Production vs Preview vs Development use separate variables) and redeploy after adding them — env var changes don't apply to already-running deployments.
+3. **All keys hit 503/429 repeatedly, including after retries** → this is a genuine Gemini-side demand spike or project-level quota limit, not a bug in the failover logic — see the "not extra quota" note above. Set `GEMINI_MODEL_FALLBACK` to a different model tier (e.g. `gemini-3.1-flash-lite`) so a sustained outage on one model doesn't take down the whole app.
+4. **One key hits 404 immediately, no retries logged** → `GEMINI_MODEL` (or `GEMINI_MODEL_FALLBACK`) is set to a model name that doesn't exist or isn't available to your key — the fatal-error path is working as designed here; fix the env var rather than adding more keys.
+5. **Nothing in the logs at all** → the request likely isn't reaching `analyzeImageWithAi` — check the rate limiter in `route.ts` isn't rejecting it (429 before ever calling Gemini) or that the request didn't fail file validation.
 
 ## The case, capitalization & keyword checks
 

@@ -10,14 +10,11 @@ export function KeywordAnalysis({ entries }: KeywordAnalysisProps) {
   if (entries.length === 0) return null;
 
   return (
-    <section
-      aria-labelledby="keyword-analysis-heading"
-      className="rounded-panel border border-line bg-surface p-6 shadow-soft animate-fade-up"
-    >
-      <h2 id="keyword-analysis-heading" className="text-base font-semibold tracking-tight text-ink">
+    <section aria-labelledby="keyword-analysis-heading" className="rounded-card border border-line bg-surface p-6">
+      <h2 id="keyword-analysis-heading" className="font-serif text-lg text-ink">
         Keyword consistency
       </h2>
-      <p className="mt-0.5 text-xs text-ink-faint">
+      <p className="mt-1 text-sm text-ink-soft">
         Repeated keywords and brand terms, checked for consistent capitalization.
       </p>
 

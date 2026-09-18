@@ -36,7 +36,7 @@ const workflowSteps = [
 export default function HomePage() {
   return (
     <div>
-      <section className="mx-auto max-w-[1200px] px-4 pb-16 pt-14 sm:px-6 sm:pb-24 sm:pt-20 lg:px-8">
+      <section className="mx-auto max-w-6xl px-5 pb-16 pt-14 sm:px-8 sm:pb-24 sm:pt-20">
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <div>
             <h1 className="font-serif text-4xl leading-[1.1] text-ink sm:text-5xl">
@@ -66,7 +66,7 @@ export default function HomePage() {
       </section>
 
       <section aria-labelledby="workflow-heading" className="border-y border-line bg-paper-dim/40">
-        <div className="mx-auto max-w-[1200px] px-4 py-12 sm:px-6 sm:py-14 lg:px-8">
+        <div className="mx-auto max-w-6xl px-5 py-12 sm:px-8">
           <h2 id="workflow-heading" className="sr-only">
             How it works
           </h2>
@@ -86,7 +86,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section aria-labelledby="features-heading" className="mx-auto max-w-[1200px] px-4 py-16 sm:px-6 sm:py-24 lg:px-8">
+      <section aria-labelledby="features-heading" className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-24">
         <h2 id="features-heading" className="font-serif text-3xl text-ink">
           What AI Text Fixer checks
         </h2>
@@ -106,7 +106,7 @@ export default function HomePage() {
       </section>
 
       <section className="border-t border-line bg-ink">
-        <div className="mx-auto flex max-w-[1200px] flex-col items-start gap-6 px-4 py-16 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-6xl flex-col items-start gap-6 px-5 py-16 sm:flex-row sm:items-center sm:justify-between sm:px-8">
           <div>
             <p className="font-serif text-2xl text-paper">Ready to check your next post?</p>
             <p className="mt-2 max-w-md text-paper/70">

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Newsreader } from "next/font/google";
+import { Newsreader, IBM_Plex_Sans } from "next/font/google";
 import { Toaster } from "sonner";
 import "./globals.css";
 import { SiteNav } from "@/components/site-nav";
@@ -9,15 +9,15 @@ const serif = Newsreader({
   subsets: ["latin"],
   variable: "--font-serif",
   display: "swap",
+  style: ["normal", "italic"],
   weight: ["400", "500", "600"],
-  adjustFontFallback: false,
 });
 
-const sans = Inter({
+const sans = IBM_Plex_Sans({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -39,9 +39,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           position="bottom-center"
           toastOptions={{
             style: {
-              background: "#1C1B19",
-              color: "#F7F5F1",
-              border: "1px solid #1C1B19",
+              background: "#1B1F1C",
+              color: "#EFF1EA",
+              border: "1px solid #1B1F1C",
               fontFamily: "var(--font-sans)",
             },
           }}
