@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { UploadDropzone } from "@/components/upload-dropzone";
 import { ImagePreview } from "@/components/image-preview";
@@ -11,14 +11,16 @@ import { ErrorState } from "@/components/error-state";
 import { Button } from "@/components/ui/button";
 import { PasteScreenshotButton, useClipboardPaste } from "@/components/screenshot-paste";
 import type { AnalysisResult, AppState, ImageSource } from "@/lib/types";
-import { fileToDataUrl } from "@/lib/utils";
+import { fileToDataUrl, friendlyApiErrorMessage } from "@/lib/utils";
 import { saveHistoryEntry } from "@/lib/history";
+import { setPendingPost } from "@/lib/recreate-store";
 import { DEMO_IMAGE_SRC, DEMO_FILE_NAME, DEMO_RESULT } from "@/lib/demo";
-import { RotateCcw, Sparkles } from "lucide-react";
+import { RotateCcw, ScanText, Sparkles, Wand2 } from "lucide-react";
 
 function AnalyzePageInner() {
   const [state, setState] = useState<AppState>({ status: "idle" });
   const searchParams = useSearchParams();
+  const router = useRouter();
 
   const runAnalysis = useCallback(async (file: File, previewUrl: string) => {
     setState({ status: "analyzing", previewUrl, stage: 0 });
@@ -39,7 +41,10 @@ function AnalyzePageInner() {
           status: "error",
           file,
           previewUrl,
-          message: data?.error ?? "Something went wrong while analyzing your design. Please try again.",
+          message: friendlyApiErrorMessage(
+            data,
+            "Something went wrong while analyzing your design. Please try again."
+          ),
         });
         return;
       }
@@ -81,6 +86,13 @@ function AnalyzePageInner() {
     if (state.status !== "preview") return;
     runAnalysis(state.file, state.previewUrl);
   }, [state, runAnalysis]);
+
+  /** "Recreate Post" — hand the upload to /recreate without a round trip. */
+  const handleRecreateClick = useCallback(() => {
+    if (state.status !== "preview") return;
+    setPendingPost({ file: state.file, previewUrl: state.previewUrl });
+    router.push("/recreate");
+  }, [state, router]);
 
   const handleReset = useCallback(() => {
     setState({ status: "idle" });
@@ -158,16 +170,67 @@ function AnalyzePageInner() {
           <div className="w-full max-w-sm">
             <ImagePreview src={state.previewUrl} />
           </div>
-          <div className="flex gap-3">
-            <Button variant="secondary" onClick={handleReset}>
-              Choose a different image
-            </Button>
-            <Button onClick={handleAnalyzeClick}>Analyze design</Button>
+
+          <div className="w-full max-w-xl rounded-card border border-line bg-surface p-5 shadow-desk">
+            <p className="text-center font-serif text-xl text-ink">
+              What would you like to do?
+            </p>
+            <div className="mt-4 grid gap-3">
+              <button
+                type="button"
+                onClick={handleAnalyzeClick}
+                className="flex items-start gap-3 rounded-card border border-line bg-paper-dim/40 px-4 py-3.5 text-left transition-colors hover:border-ink"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-pen">
+                  <ScanText className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span>
+                  <span className="block text-[15px] font-semibold text-ink">Analyze Text</span>
+                  <span className="mt-0.5 block text-sm leading-relaxed text-ink-soft">
+                    Grammar, spelling, punctuation, capitalization, clarity, CTA and marketing copy —
+                    with corrections and a corrected version.
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRecreateClick}
+                className="flex items-start gap-3 rounded-card border border-line bg-paper-dim/40 px-4 py-3.5 text-left transition-colors hover:border-ink"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-pen">
+                  <Wand2 className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span>
+                  <span className="block text-[15px] font-semibold text-ink">Recreate Post</span>
+                  <span className="mt-0.5 block text-sm leading-relaxed text-ink-soft">
+                    Recreate the same design with corrected text — case, alignment, spacing and
+                    hierarchy — then compare original vs corrected and download.
+                  </span>
+                </span>
+              </button>
+            </div>
+
+            <div className="mt-4 flex justify-center">
+              <Button variant="ghost" size="sm" onClick={handleReset}>
+                <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                Choose a different image
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
-      {state.status === "analyzing" && <AnalysisLoader />}
+      {state.status === "analyzing" && (
+        <div className="flex flex-col items-start gap-6 sm:flex-row">
+          <div className="mx-auto w-full max-w-[240px] shrink-0 sm:mx-0">
+            <ImagePreview src={state.previewUrl} />
+          </div>
+          <div className="w-full max-w-2xl flex-1">
+            <AnalysisLoader />
+          </div>
+        </div>
+      )}
 
       {state.status === "result" && (
         <div>

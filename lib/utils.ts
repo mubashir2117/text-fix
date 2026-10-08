@@ -67,3 +67,20 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Maps an API error payload to the message shown in the UI. Server
+ * messages are already user-friendly; the missing-API-key case is
+ * translated to the approved administrator message, and raw/internal
+ * error details are never surfaced.
+ */
+export function friendlyApiErrorMessage(payload: unknown, fallback: string): string {
+  const data = payload as { error?: unknown; code?: unknown } | null | undefined;
+  if (data?.code === "missing_api_key") {
+    return "AI service is not configured. Please contact the administrator.";
+  }
+  if (typeof data?.error === "string" && data.error.trim().length > 0) {
+    return data.error.trim();
+  }
+  return fallback;
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES } from "@/lib/validation";
 import { analyzeImageWithAi, AiAnalysisError } from "@/lib/ai";
+import { hasGeminiKey } from "@/lib/gemini";
 import type { AnalysisResult } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -23,6 +24,14 @@ function isRateLimited(key: string): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  // Safe server-side configuration check — never reveals the key itself.
+  if (!hasGeminiKey()) {
+    return NextResponse.json(
+      { error: "Gemini API key is not configured.", code: "missing_api_key" },
+      { status: 503 }
+    );
+  }
+
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
   if (isRateLimited(ip)) {
     return NextResponse.json(

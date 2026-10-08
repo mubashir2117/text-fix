@@ -59,6 +59,15 @@ export default function HomePage() {
                 or try an example
               </Link>
             </div>
+            <p className="mt-5 text-sm leading-relaxed text-ink-faint">
+              Got a post you like?{" "}
+              <Link
+                href="/recreate"
+                className="font-medium text-ink-soft underline-offset-4 hover:text-ink hover:underline"
+              >
+                Recreate the same design with corrected text, then compare →
+              </Link>
+            </p>
           </div>
 
           <HeroAnnotation />

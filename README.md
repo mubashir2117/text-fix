@@ -6,6 +6,12 @@ the visible text and check it for spelling, grammar, punctuation,
 capitalization consistency, keyword consistency, and marketing-copy
 quality before you publish.
 
+It can also **recreate an existing post**: upload a design and have AI
+analyze its text, layout, typography, colors and visual elements, then
+rebuild it as a clean, professional, editable HTML/CSS design you can
+preview side by side, regenerate, improve, fix the copy on, and export
+as PNG or JPG — see [Recreate this post](#recreate-this-post).
+
 ## Stack
 
 - **Next.js 14** (App Router) + **TypeScript**
@@ -28,10 +34,17 @@ Open http://localhost:3000.
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `GEMINI_API_KEY_1` | Yes | Server-side only. Primary Gemini API key. |
+| `GEMINI_API_KEY` | Yes* | Server-side only. Single primary key — the simplest setup. |
+| `GEMINI_API_KEY_1` | Yes* | Server-side only. First key of the ordered failover list. Either this or `GEMINI_API_KEY` must be set. |
 | `GEMINI_API_KEY_2` … `GEMINI_API_KEY_5` | No | Additional keys tried in order if an earlier key hits a transient error. |
 | `GEMINI_MODEL` | No | Defaults to `gemini-3.6-flash`. Confirm this exact model name is available to your key/API version — a wrong name fails fast with a clear config error rather than retrying every key (see "Gemini failover" below). |
 | `GEMINI_MODEL_FALLBACK` | No | Only tried if **every** key fails against `GEMINI_MODEL` for a non-fatal reason (sustained 503/429/5xx). Useful when a whole model tier — not just one key — is under demand pressure; point it at a different tier, e.g. `gemini-3.1-flash-lite`. |
+
+\* If **no** key is configured, both AI routes answer
+`{ "error": "Gemini API key is not configured.", "code": "missing_api_key" }`
+(HTTP 503) and the UI shows "AI service is not configured. Please contact
+the administrator." Keys are read server-side only — never expose them
+with a `NEXT_PUBLIC_` prefix.
 
 `.env.local` is already listed in `.gitignore` — never commit real API keys.
 
@@ -146,14 +159,87 @@ These render as two new result-page sections: `components/case-analysis.tsx` and
 
 No screenshot is ever required to be saved to disk first.
 
+## Recreate & compare post
+
+The second workflow: `/recreate` (also reachable from the "Recreate
+Post" choice on `/analyze` after you pick an image, from the nav, or
+from the homepage link).
+
+**Principle: same design, better text presentation.** The AI recreates
+the uploaded post as closely as possible — same layout, background,
+images, logo, colors, shapes, positions and overall style — and focuses
+its improvements on the text.
+
+**Flow:** upload → choose a format → analyze the original → extract
+visible text → check sentence case / Title Case / uppercase → check
+text alignment → check spacing & hierarchy → recreate the same post →
+**Original vs corrected** preview (side by side, plus a before/after
+slider) → what-improved report, per-element text analysis table and
+design improvement summary → regenerate / improve / fix text / reset →
+download as **PNG** or **JPG**.
+
+Report sections rendered by `components/text-report.tsx`:
+
+- **What improved?** — `improvementReport[]`, one entry per category
+  (`capitalization`, `alignment`, `spacing`, `hierarchy`, `readability`,
+  `cta`, `grammar`) with a `kind` of `definite_problem`,
+  `design_improvement`, or `correct`. Already-correct elements are
+  reported explicitly (e.g. "Title Case is appropriate for this
+  headline") instead of being changed.
+- **Text analysis** — `textAnalysis[]`: original vs. recommended text
+  per element, current vs. recommended capitalization style, alignment,
+  a reason, and a status badge (**✓ Correct / ⚠ Improve / ✕
+  Incorrect**).
+- **Design improvement summary** — `summary`: overall improvement, text
+  accuracy %, and alignment / capitalization / hierarchy / readability
+  values, labelled as an **AI-generated assessment**, not a measurement.
+
+- `app/api/recreate/route.ts` — validates the upload and format,
+  supports three modes passed as `mode`:
+  - `create` — full first recreation (temperature 0.4).
+  - `regenerate` — same source image, a different variant (temperature 0.6);
+    the previous result is sent back as `previous` so the model varies the
+    layout instead of repeating itself.
+  - `improve` — refinement pass with `improvements` notes
+    (spacing, typography, alignment, contrast, visual hierarchy, CTA visibility).
+- `lib/recreate.ts` — the dedicated server-side system instruction
+  (graphic designer + typography specialist + social media designer +
+  professional copy editor) and `recreatePostWithAi()`;
+  `lib/validation.ts` — `RecreateResultSchema`, `TextElementAssessmentSchema`,
+  `ImprovementItemSchema` and `DesignSummarySchema`, validated with Zod
+  before anything reaches the UI. The report fields are optional so
+  older results still validate; the UI falls back to the plain
+  `improvements` list when they are absent.
+- `components/recreated-post.tsx` — renders the result as real,
+  editable HTML/CSS layers (background, logo/icon row, image area,
+  label, headline, subtitle, body, price, CTA, meta) across five layout
+  templates with responsive scaling and the five design fonts loaded in
+  `app/layout.tsx` as CSS variables.
+- `components/recreate-preview.tsx` — "Original vs corrected post"
+  comparison view, action bar, palette/meta tiles, and an offscreen 1x
+  node rasterized at export resolution with `html-to-image`.
+- **Fix text** reuses `/api/analyze`: the corrected copy is mapped onto
+  the recreation's text hierarchy (headline / subtitle / body / CTA /
+  label) without touching the design.
+- **Reset** pops an in-memory `past` stack of previous results, so you
+  can step back through your edit history.
+- `lib/recreate-store.ts` — an in-memory, module-scoped handoff of the
+  uploaded file from `/analyze` to `/recreate`; nothing is persisted,
+  so opening `/recreate` directly just shows its own dropzone.
+
+Rate-limited per route like `/api/analyze`, and it returns the same
+missing-key / "AI service is temporarily busy" error contract.
+
 ## Project structure
 
 ```
 app/
   page.tsx              Landing page
-  analyze/page.tsx       Upload + paste + analysis workflow
+  analyze/page.tsx       Upload + paste + "Analyze Text / Recreate Post" choice
+  recreate/page.tsx      Recreate-this-post workflow (analyze → recreate → export)
   history/page.tsx       Local analysis history
   api/analyze/route.ts    Server route that calls lib/ai.ts
+  api/recreate/route.ts   Server route for recreation (create/regenerate/improve)
 components/
   upload-dropzone.tsx, screenshot-paste.tsx, image-preview.tsx,
   analysis-loader.tsx, analysis-result.tsx, overall-status.tsx,
@@ -161,9 +247,16 @@ components/
   keyword-analysis.tsx, correction-card.tsx, copy-review.tsx,
   copy-button.tsx, analysis-summary.tsx, empty-state.tsx,
   error-state.tsx, hero-annotation.tsx, site-nav.tsx, site-footer.tsx
+  recreated-post.tsx, recreate-preview.tsx, recreate-loader.tsx,
+  post-format-select.tsx
   ui/                    button.tsx, badge.tsx, card.tsx
 lib/
   ai.ts                  Gemini failover + system prompt (see above)
+  gemini.ts              Shared server-side Gemini transport (used by ai.ts + recreate.ts)
+  recreate.ts            Recreation system prompt + recreatePostWithAi()
+  recreate-store.ts      Ephemeral file handoff /analyze → /recreate
+  formats.ts             Post formats, color/contrast helpers, normalizeRecreation()
+  export-image.ts        PNG/JPG export registry + download helpers
   validation.ts           Zod schemas + file validation
   types.ts                Shared TypeScript types
   utils.ts                Formatting + clipboard helpers
@@ -178,7 +271,8 @@ public/demo/example.svg   Sample design used by demo mode
 2. In Vercel, click **New Project** and import the repository.
 3. Vercel will detect Next.js automatically — no build settings to change.
 4. Under **Settings → Environment Variables**, add for each environment you deploy (Production / Preview / Development):
-   - `GEMINI_API_KEY_1` (required)
+   - `GEMINI_API_KEY` (required — or use the numbered list below instead)
+   - `GEMINI_API_KEY_1` (required if you don't set `GEMINI_API_KEY`)
    - `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, … as needed (optional)
    - `GEMINI_MODEL` (optional — omit to use the default)
 5. Click **Deploy**.
@@ -202,7 +296,8 @@ history to a real backend (e.g. Supabase):
 
 ## Rate limiting
 
-`app/api/analyze/route.ts` includes a minimal in-memory rate limiter as
+`app/api/analyze/route.ts` and `app/api/recreate/route.ts` each include
+a minimal in-memory rate limiter as
 a starting point, separate from the Gemini-side failover described
 above — this one limits how often *your own users* can call your API,
 not how Gemini responds. It resets whenever a serverless instance

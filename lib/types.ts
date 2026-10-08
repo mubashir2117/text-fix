@@ -97,3 +97,85 @@ export type AppState =
   | { status: "analyzing"; previewUrl: string; stage: number }
   | { status: "result"; previewUrl: string; result: AnalysisResult; fileName: string }
   | { status: "error"; file: File | null; previewUrl: string | null; message: string };
+
+// --- "Recreate This Post" feature ---------------------------------------
+
+export type {
+  PostFormatId,
+  TextAlignment,
+  RecreateTemplate,
+  ImagePlacement,
+  CtaStyle,
+  VisualElement,
+  RecreateResult,
+  RecreatedText,
+  RecreatedDesign,
+  RecreatedTypography,
+  TextElementAssessment,
+  TextAssessmentStatus,
+  TextElementKind,
+  ImprovementItem,
+  ImprovementCategory,
+  ImprovementKind,
+  DesignSummary,
+} from "./validation";
+
+import type { PostFormatId, RecreateResult } from "./validation";
+
+/** What the recreate flow is currently asking the server to do. */
+export type RecreateMode = "create" | "regenerate" | "improve";
+
+/** Post-format selection carried across the recreate flow. */
+export interface RecreateSelection {
+  format: PostFormatId;
+  customWidth: number;
+  customHeight: number;
+}
+
+export const DEFAULT_RECREATE_SELECTION: RecreateSelection = {
+  format: "instagram_portrait",
+  customWidth: 1080,
+  customHeight: 1350,
+};
+
+/** Which generation-style action is currently running on the result view. */
+export type RecreateBusyAction = RecreateMode | "fix" | "download" | null;
+
+/**
+ * Page state machine for /recreate — mirrors AppState on the analyze
+ * page: idle -> ready -> recreating -> result (with reset/regenerate
+ * cycling back through `past`), plus a recoverable error state.
+ */
+export type RecreateState =
+  | { status: "idle" }
+  | {
+      status: "ready";
+      file: File;
+      previewUrl: string;
+      source: ImageSource;
+      selection: RecreateSelection;
+    }
+  | {
+      status: "recreating";
+      file: File;
+      previewUrl: string;
+      selection: RecreateSelection;
+      mode: RecreateMode;
+    }
+  | {
+      status: "result";
+      file: File;
+      previewUrl: string;
+      selection: RecreateSelection;
+      result: RecreateResult;
+      /** Previous versions, newest last — powers the Reset action. */
+      past: RecreateResult[];
+      busy: RecreateBusyAction;
+    }
+  | {
+      status: "error";
+      file: File | null;
+      previewUrl: string | null;
+      selection?: RecreateSelection;
+      message: string;
+    };
