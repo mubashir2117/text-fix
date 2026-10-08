@@ -24,6 +24,8 @@ import {
   type RecreateState,
 } from "@/lib/types";
 import { friendlyApiErrorMessage } from "@/lib/utils";
+import { postForm } from "@/lib/client-api";
+import { readApiError, type ApiErrorCode, type ApiProgressEvent } from "@/lib/errors";
 
 /** Focus notes sent with "Improve design" (spec §37). */
 const IMPROVE_FOCUS = [
@@ -48,8 +50,12 @@ const FLOW_STEPS = [
 
 function RecreatePageInner() {
   const [state, setState] = useState<RecreateState>({ status: "idle" });
+  /** Live Gemini retry progress for the current request (any mode). */
+  const [busyRetry, setBusyRetry] = useState<ApiProgressEvent | null>(null);
   const searchParams = useSearchParams();
   const adoptedHandoffRef = useRef(false);
+  /** Prevents duplicate submissions from double-clicks / repeated submits. */
+  const inFlightRef = useRef(false);
 
   const handleFileSelected = useCallback((file: File, source: ImageSource = "upload") => {
     const previewUrl = URL.createObjectURL(file);
@@ -102,21 +108,25 @@ function RecreatePageInner() {
       previous?: RecreateResult;
       past?: RecreateResult[];
     }) => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+
       const { file, previewUrl, selection, mode, previous, past = [] } = options;
       const fromResult = Boolean(previous);
 
+      setBusyRetry(null);
       setState(
         fromResult && previous
           ? { status: "result", file, previewUrl, selection, result: previous, past, busy: mode }
           : { status: "recreating", file, previewUrl, selection, mode }
       );
 
-      const backToResult = (message: string) => {
+      const backToResult = (message: string, code?: ApiErrorCode) => {
         if (fromResult && previous) {
           setState((current) => (current.status === "result" ? { ...current, busy: null } : current));
           toast.error(message);
         } else {
-          setState({ status: "error", file, previewUrl, selection, message });
+          setState({ status: "error", file, previewUrl, selection, message, code });
         }
       };
 
@@ -131,12 +141,16 @@ function RecreatePageInner() {
         if (previous) formData.append("previous", JSON.stringify(previous));
         if (mode === "improve") formData.append("improvements", JSON.stringify(IMPROVE_FOCUS));
 
-        const response = await fetch("/api/recreate", { method: "POST", body: formData });
-        const data = await response.json().catch(() => null);
+        const response = await postForm("/api/recreate", formData, {
+          onProgress: setBusyRetry,
+        });
+        const data = response.data;
 
         if (!response.ok || !data?.result) {
+          const { code } = readApiError(data);
           backToResult(
-            friendlyApiErrorMessage(data, "Unable to analyze the design right now. Please try again.")
+            friendlyApiErrorMessage(data, "Unable to analyze the design right now. Please try again."),
+            code
           );
           return;
         }
@@ -153,6 +167,9 @@ function RecreatePageInner() {
         });
       } catch {
         backToResult("Connection problem. Please check your internet connection and try again.");
+      } finally {
+        setBusyRetry(null);
+        inFlightRef.current = false;
       }
     },
     []
@@ -399,7 +416,7 @@ function RecreatePageInner() {
             <ImagePreview src={state.previewUrl} />
           </div>
           <div className="w-full max-w-2xl flex-1">
-            <RecreateLoader />
+            <RecreateLoader retry={busyRetry} />
           </div>
         </div>
       )}
@@ -419,6 +436,7 @@ function RecreatePageInner() {
             recreation={recreation}
             selection={state.selection}
             busy={state.busy}
+            retry={busyRetry}
             canReset={state.past.length > 0}
             onRegenerate={handleRegenerate}
             onImprove={handleImprove}
@@ -436,6 +454,7 @@ function RecreatePageInner() {
             </div>
           )}
           <ErrorState
+            code={state.code}
             message={state.message}
             reassurance={Boolean(state.file)}
             onRetry={state.file ? handleRetry : undefined}

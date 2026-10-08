@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { UploadDropzone } from "@/components/upload-dropzone";
@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button";
 import { PasteScreenshotButton, useClipboardPaste } from "@/components/screenshot-paste";
 import type { AnalysisResult, AppState, ImageSource } from "@/lib/types";
 import { fileToDataUrl, friendlyApiErrorMessage } from "@/lib/utils";
+import { postForm } from "@/lib/client-api";
+import { readApiError } from "@/lib/errors";
 import { saveHistoryEntry } from "@/lib/history";
 import { setPendingPost } from "@/lib/recreate-store";
 import { DEMO_IMAGE_SRC, DEMO_FILE_NAME, DEMO_RESULT } from "@/lib/demo";
@@ -21,26 +23,34 @@ function AnalyzePageInner() {
   const [state, setState] = useState<AppState>({ status: "idle" });
   const searchParams = useSearchParams();
   const router = useRouter();
+  /** Prevents duplicate submissions from double-clicks / repeated submits. */
+  const inFlightRef = useRef(false);
 
   const runAnalysis = useCallback(async (file: File, previewUrl: string) => {
-    setState({ status: "analyzing", previewUrl, stage: 0 });
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    setState({ status: "analyzing", previewUrl, stage: 0, retry: null });
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        body: formData,
+      const response = await postForm("/api/analyze", formData, {
+        onProgress: (event) =>
+          setState((current) =>
+            current.status === "analyzing" ? { ...current, retry: event } : current
+          ),
       });
 
-      const data = await response.json();
+      const data = response.data;
 
       if (!response.ok && !data?.result) {
+        const { code } = readApiError(data);
         setState({
           status: "error",
           file,
           previewUrl,
+          code,
           message: friendlyApiErrorMessage(
             data,
             "Something went wrong while analyzing your design. Please try again."
@@ -57,8 +67,15 @@ function AnalyzePageInner() {
 
       setState({ status: "result", previewUrl, result, fileName: file.name });
 
-      const thumbnailDataUrl = await fileToDataUrl(file).catch(() => previewUrl);
-      saveHistoryEntry({ fileName: file.name, thumbnailDataUrl, result });
+      // History is best-effort: a localStorage quota failure (large
+      // thumbnails are more likely in production) must never turn a
+      // successful analysis into an error screen.
+      try {
+        const thumbnailDataUrl = await fileToDataUrl(file).catch(() => previewUrl);
+        saveHistoryEntry({ fileName: file.name, thumbnailDataUrl, result });
+      } catch {
+        // ignore — history persistence is optional
+      }
     } catch (err) {
       setState({
         status: "error",
@@ -66,6 +83,8 @@ function AnalyzePageInner() {
         previewUrl,
         message: "Connection problem. Please check your internet connection and try again.",
       });
+    } finally {
+      inFlightRef.current = false;
     }
   }, []);
 
@@ -227,7 +246,7 @@ function AnalyzePageInner() {
             <ImagePreview src={state.previewUrl} />
           </div>
           <div className="w-full max-w-2xl flex-1">
-            <AnalysisLoader />
+            <AnalysisLoader retry={state.retry} />
           </div>
         </div>
       )}
@@ -249,6 +268,7 @@ function AnalyzePageInner() {
             </div>
           )}
           <ErrorState
+            code={state.code}
             message={state.message}
             reassurance={Boolean(state.file)}
             onRetry={state.file ? handleRetrySameImage : undefined}

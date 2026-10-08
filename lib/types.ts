@@ -91,12 +91,27 @@ export interface HistoryEntry {
 
 export type ImageSource = "upload" | "paste";
 
+import type { ApiErrorCode, ApiProgressEvent } from "./errors";
+
 export type AppState =
   | { status: "idle" }
   | { status: "preview"; file: File; previewUrl: string; source: ImageSource }
-  | { status: "analyzing"; previewUrl: string; stage: number }
+  | {
+      status: "analyzing";
+      previewUrl: string;
+      stage: number;
+      /** Live retry progress while the server retries transient Gemini errors. */
+      retry?: ApiProgressEvent | null;
+    }
   | { status: "result"; previewUrl: string; result: AnalysisResult; fileName: string }
-  | { status: "error"; file: File | null; previewUrl: string | null; message: string };
+  | {
+      status: "error";
+      file: File | null;
+      previewUrl: string | null;
+      message: string;
+      /** Structured error code, used to pick a specific error title. */
+      code?: ApiErrorCode;
+    };
 
 // --- "Recreate This Post" feature ---------------------------------------
 
@@ -178,4 +193,6 @@ export type RecreateState =
       previewUrl: string | null;
       selection?: RecreateSelection;
       message: string;
+      /** Structured error code, used to pick a specific error title. */
+      code?: ApiErrorCode;
     };

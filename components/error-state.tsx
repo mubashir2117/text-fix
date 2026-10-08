@@ -1,8 +1,11 @@
 import { RotateCcw, ImageOff, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ERROR_TITLES, type ApiErrorCode } from "@/lib/errors";
 
 interface ErrorStateProps {
   title?: string;
+  /** Structured API error code — picks a specific, non-generic title. */
+  code?: ApiErrorCode | string;
   message: string;
   /** Shown under the message — set false to hide (e.g. when no image was kept, like demo mode). */
   reassurance?: boolean;
@@ -10,13 +13,20 @@ interface ErrorStateProps {
   onChooseAnother?: () => void;
 }
 
+function titleForCode(code?: string): string | undefined {
+  if (code && code in ERROR_TITLES) return ERROR_TITLES[code as ApiErrorCode];
+  return undefined;
+}
+
 export function ErrorState({
-  title = "AI service is temporarily busy",
+  title,
+  code,
   message,
   reassurance = true,
   onRetry,
   onChooseAnother,
 }: ErrorStateProps) {
+  const resolvedTitle = title ?? titleForCode(code) ?? "Something went wrong";
   return (
     <div
       role="alert"
@@ -26,7 +36,7 @@ export function ErrorState({
         <TriangleAlert className="h-6 w-6 text-flag" aria-hidden="true" />
       </span>
       <div>
-        <p className="font-serif text-lg text-ink">{title}</p>
+        <p className="font-serif text-lg text-ink">{resolvedTitle}</p>
         <p className="mt-1 max-w-sm text-sm text-ink-soft">{message}</p>
         {reassurance && (
           <p className="mt-1 max-w-sm text-sm text-ink-faint">

@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { RetryNotice } from "@/components/retry-notice";
+import type { ApiProgressEvent } from "@/lib/errors";
 
 const STAGES = [
   "Reading image...",
@@ -11,7 +13,12 @@ const STAGES = [
   "Preparing results...",
 ];
 
-export function AnalysisLoader() {
+interface AnalysisLoaderProps {
+  /** Live retry progress while the server retries transient Gemini errors. */
+  retry?: ApiProgressEvent | null;
+}
+
+export function AnalysisLoader({ retry }: AnalysisLoaderProps) {
   const [stageIndex, setStageIndex] = useState(0);
 
   useEffect(() => {
@@ -51,6 +58,7 @@ export function AnalysisLoader() {
           {STAGES[stageIndex]}
         </p>
       </div>
+      <RetryNotice retry={retry} />
       <span className="sr-only">{STAGES[stageIndex]}</span>
     </div>
   );

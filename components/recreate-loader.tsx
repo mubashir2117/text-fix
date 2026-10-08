@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { RetryNotice } from "@/components/retry-notice";
+import type { ApiProgressEvent } from "@/lib/errors";
 
 /**
  * Staged loader mirroring the "Recreate & Compare Post" user flow:
@@ -19,7 +21,12 @@ const STAGES = [
   "Preparing your preview...",
 ];
 
-export function RecreateLoader() {
+interface RecreateLoaderProps {
+  /** Live retry progress while the server retries transient Gemini errors. */
+  retry?: ApiProgressEvent | null;
+}
+
+export function RecreateLoader({ retry }: RecreateLoaderProps) {
   const [stageIndex, setStageIndex] = useState(0);
 
   useEffect(() => {
@@ -59,6 +66,7 @@ export function RecreateLoader() {
           style={{ width: `${((stageIndex + 1) / STAGES.length) * 100}%` }}
         />
       </div>
+      <RetryNotice retry={retry} />
       <span className="sr-only">{STAGES[stageIndex]}</span>
     </div>
   );

@@ -1,4 +1,11 @@
 import type { ZodType, ZodTypeDef } from "zod";
+import {
+  ApiError,
+  ERROR_MESSAGES,
+  RETRY_MESSAGES,
+  type ApiProgressEvent,
+  type GeminiErrorCode,
+} from "./errors";
 
 // Fail fast if this module ever ends up in a browser bundle: the Gemini
 // API key must only ever be read from server-side environment variables
@@ -29,36 +36,42 @@ if (typeof window !== "undefined") {
  * (GEMINI_API_KEY / GEMINI_API_KEY_1..5) and is never sent to the
  * browser. Do NOT create a NEXT_PUBLIC_ variant of these variables.
  *
- * Every function here works on generic, schema-validated JSON so both
- * the text-analysis flow (lib/ai.ts) and the design-recreation flow
- * (lib/recreate.ts) share the same transport, retry and validation
- * behavior.
+ * Error contract: every failure surfaces as a GeminiError carrying a
+ * machine-readable `code` (see GeminiErrorCode in lib/errors.ts) and a
+ * user-safe `message`. The API routes serialize this as:
+ *   { success: false, error: { code, message } }
  */
 
-// --- Errors -------------------------------------------------------------
+// --- Errors ---------------------------------------------------------------
 
 /**
- * Thrown for any Gemini-side failure: missing keys, invalid/expired
- * keys, rate limits, timeouts, network failures, unknown model, or an
- * invalid/malformed response. Messages are safe to log — they never
- * contain the API key, image payload, or raw provider credentials.
+ * Thrown for any Gemini-side failure: missing keys, invalid/expired keys,
+ * rate limits, timeouts, network failures, unknown model, or an
+ * invalid/malformed response. Messages are safe to show to end users and
+ * to log — they never contain the API key, image payload, or raw
+ * provider credentials.
  */
-export class GeminiError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
-    super(message);
+export class GeminiError extends ApiError {
+  readonly code: GeminiErrorCode;
+  readonly status?: number;
+
+  constructor(message: string, code: GeminiErrorCode, cause?: unknown, status?: number) {
+    super(message, code, cause);
     this.name = "GeminiError";
+    this.code = code;
+    this.status = status;
   }
 }
 
 /** Raised when no server-side Gemini key is configured at all. */
 export class GeminiNotConfiguredError extends GeminiError {
-  constructor(message = "The AI provider is not configured on the server.") {
-    super(message);
+  constructor(message: string = ERROR_MESSAGES.MISSING_GEMINI_API_KEY) {
+    super(message, "MISSING_GEMINI_API_KEY");
     this.name = "GeminiNotConfiguredError";
   }
 }
 
-// --- Server-side configuration ------------------------------------------
+// --- Server-side configuration --------------------------------------------
 
 export interface ConfiguredKey {
   key: string;
@@ -110,86 +123,183 @@ export function getGeminiFallbackModel(): string | undefined {
   return value ? value : undefined;
 }
 
-// --- Logging (never logs key values or image data) ----------------------
+// --- Logging (never logs key values or image data) --------------------------
 
 function log(message: string) {
-  console.log(`[gemini] ${message}`);
+  console.log(`[Gemini] ${message}`);
 }
 
 function logError(message: string) {
-  console.error(`[gemini] ${message}`);
+  console.error(`[Gemini] ${message}`);
 }
 
-// --- Retry / backoff configuration --------------------------------------
+/**
+ * Failure block for Vercel Function Logs (spec §4 — safe production
+ * logging). Logs only the HTTP status, the model name, the error code
+ * and a safe message: NEVER the API key, the image payload, or raw
+ * provider credentials.
+ */
+function logGeminiError(
+  model: string,
+  status: number | "n/a" | "final",
+  code: GeminiErrorCode,
+  message: string
+) {
+  console.error(
+    `[GEMINI ERROR]\nstatus: ${status}\nmodel: ${model}\ncode: ${code}\nmessage: ${message}`
+  );
+}
 
-const MAX_RETRIES_PER_KEY = 2; // up to 3 attempts total per key
-const BASE_BACKOFF_MS = 1000;
-const REQUEST_TIMEOUT_MS = 40_000;
+// --- Retry / backoff configuration ------------------------------------------
+
+/** Transient statuses are retried with exponential backoff, up to 4 times. */
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+/** Never retried: 400 / 401 / 403 / 404 (and any other unexpected status). */
+const MAX_RETRIES = 4;
+const BACKOFF_BASE_MS = 1000; // 1s, 2s, 4s, 8s
+const BACKOFF_JITTER = 0.25; // +/- 25%
+const MAX_RETRY_DELAY_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 25_000;
+/** Whole-request budget so retries always fit inside `maxDuration = 60`. */
+const TOTAL_BUDGET_MS = 52_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** attempt 1 -> ~1s, attempt 2 -> ~2s, with a little jitter so parallel requests don't retry in lockstep. */
-function backoffDelayMs(attempt: number): number {
-  return BASE_BACKOFF_MS * attempt + Math.random() * 300;
+/**
+ * Jittered exponential backoff: attempt 1 -> ~1s, 2 -> ~2s, 3 -> ~4s, 4 -> ~8s.
+ * Jitter keeps parallel requests from retrying in lockstep.
+ */
+function backoffDelayMs(retryIndex: number, retryAfterMs?: number): number {
+  const base = BACKOFF_BASE_MS * 2 ** (retryIndex - 1);
+  const jitter = 1 + (Math.random() * 2 - 1) * BACKOFF_JITTER;
+  const delay = Math.round(base * jitter);
+  const withRetryAfter = retryAfterMs && retryAfterMs > delay ? retryAfterMs : delay;
+  return Math.min(withRetryAfter, MAX_RETRY_DELAY_MS);
 }
 
-// --- Error classification -------------------------------------------------
+function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)} seconds`;
+}
+
+// --- Error classification ----------------------------------------------------
 
 type ErrorClass =
-  | "retry-same-key" // transient — worth retrying this same key with backoff
-  | "failover-now" // don't waste retries on this key — move to the next one immediately
+  | "retry" // transient — worth retrying this same key with backoff
+  | "failover" // don't waste retries on this key — move to the next one
   | "fatal"; // not key-specific — retrying with another key won't help
 
 interface ClassifiedError {
   errorClass: ErrorClass;
-  message: string;
+  code: GeminiErrorCode;
+  /** Log-safe detail (never shown to users). */
+  detail: string;
   retryAfterMs?: number;
+  status?: number;
 }
 
-function classifyHttpError(status: number, body: string, retryAfterHeader: string | null): ClassifiedError {
+function classifyHttpError(
+  status: number,
+  body: string,
+  retryAfterHeader: string | null
+): ClassifiedError {
+  const detail = body.slice(0, 300);
+
+  // 400 — malformed request. Retrying the same request changes nothing.
+  if (status === 400) {
+    return { errorClass: "failover", code: "GEMINI_BAD_REQUEST", detail: `Gemini returned 400: ${detail}`, status };
+  }
+
+  // 401 — this specific key is invalid/revoked. No point retrying it, but a
+  // different key/project may still work, so fail over rather than loop.
+  if (status === 401) {
+    return {
+      errorClass: "failover",
+      code: "GEMINI_AUTH_FAILED",
+      detail: "Gemini returned 401 (invalid or unauthorized API key).",
+      status,
+    };
+  }
+
+  // 403 — key is valid but not allowed for this model/project.
+  if (status === 403) {
+    return {
+      errorClass: "failover",
+      code: "GEMINI_ACCESS_DENIED",
+      detail: `Gemini returned 403: ${detail}`,
+      status,
+    };
+  }
+
   // 404 — wrong/unavailable model name. Every key shares the same model,
   // so rotating keys will not fix this; surface it as a config problem.
   if (status === 404) {
     return {
       errorClass: "fatal",
-      message: `Gemini model not found (404). Check the GEMINI_MODEL environment variable — current value may not exist or may not be available to your account's API version.`,
+      code: "GEMINI_MODEL_NOT_FOUND",
+      detail:
+        "Gemini model not found (404). Check the GEMINI_MODEL environment variable — current value may not exist or may not be available to your account's API version.",
+      status,
     };
   }
 
-  // 401 — this specific key is invalid/revoked. No point retrying it.
-  if (status === 401) {
-    return { errorClass: "failover-now", message: "Gemini returned 401 (invalid or unauthorized API key)." };
+  // 408 — request timeout: transient, retry with backoff.
+  if (status === 408) {
+    return { errorClass: "retry", code: "GEMINI_TIMEOUT", detail: "Gemini returned 408 (request timeout).", status };
   }
 
-  // 400 / 403 — bad request or forbidden. Usually not fixed by retrying
-  // the same key repeatedly, but a different key/project might not be
-  // similarly restricted, so move on rather than looping.
-  if (status === 400 || status === 403) {
-    return { errorClass: "failover-now", message: `Gemini returned ${status}: ${body.slice(0, 200)}` };
-  }
-
-  // 429 — rate limited. Respect Retry-After if Gemini sent one.
+  // 429 — rate limited / quota exhausted. Respect Retry-After if sent.
   if (status === 429) {
-    const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
+    const parsed = retryAfterHeader ? Number(retryAfterHeader) * 1000 : undefined;
     return {
-      errorClass: "retry-same-key",
-      message: "Gemini returned 429 (RESOURCE_EXHAUSTED).",
-      retryAfterMs: retryAfterMs && !Number.isNaN(retryAfterMs) ? retryAfterMs : undefined,
+      errorClass: "retry",
+      code: "GEMINI_RATE_LIMITED",
+      detail: "Gemini returned 429 (RESOURCE_EXHAUSTED).",
+      retryAfterMs: parsed && !Number.isNaN(parsed) ? parsed : undefined,
+      status,
     };
   }
 
-  // 500 / 502 / 503 / 504 — transient provider-side issues.
-  if (status === 500 || status === 502 || status === 503 || status === 504) {
-    return { errorClass: "retry-same-key", message: `Gemini returned ${status} (temporary provider error).` };
+  // 504 — gateway timeout: treated as a timeout, not a generic outage.
+  if (status === 504) {
+    return { errorClass: "retry", code: "GEMINI_TIMEOUT", detail: "Gemini returned 504 (gateway timeout).", status };
   }
 
-  // Anything else: treat as failover-worthy but not fatal.
-  return { errorClass: "failover-now", message: `Gemini returned an unexpected status ${status}.` };
+  // 503 — provider temporarily unavailable.
+  if (status === 503) {
+    return {
+      errorClass: "retry",
+      code: "GEMINI_SERVICE_UNAVAILABLE",
+      detail: "Gemini returned 503 (service unavailable).",
+      status,
+    };
+  }
+
+  // 500 / 502 — provider-side internal errors.
+  if (status === 500 || status === 502) {
+    return {
+      errorClass: "retry",
+      code: "GEMINI_INTERNAL_ERROR",
+      detail: `Gemini returned ${status} (temporary provider error).`,
+      status,
+    };
+  }
+
+  // Unexpected status: retry only if the status is known-transient.
+  if (RETRYABLE_STATUSES.has(status)) {
+    return { errorClass: "retry", code: "GEMINI_INTERNAL_ERROR", detail: `Gemini returned ${status}.`, status };
+  }
+
+  return {
+    errorClass: "failover",
+    code: "GEMINI_SERVICE_UNAVAILABLE",
+    detail: `Gemini returned an unexpected status ${status}.`,
+    status,
+  };
 }
 
-// --- Input types ----------------------------------------------------------
+// --- Input types --------------------------------------------------------------
 
 export interface GeminiImageInput {
   base64Data: string;
@@ -206,9 +316,16 @@ export interface GenerateJsonInput<T> {
   /** Zod schema the raw JSON must satisfy before anything reaches the frontend. */
   schema: ZodType<T, ZodTypeDef, any>;
   temperature?: number;
+  /** Notified before each retry so the route can stream progress to the UI. */
+  onProgress?: (event: ApiProgressEvent) => void;
 }
 
-// --- Single HTTP attempt --------------------------------------------------
+interface RetryContext {
+  deadline: number;
+  onProgress?: (event: ApiProgressEvent) => void;
+}
+
+// --- Single HTTP attempt ------------------------------------------------------
 
 interface AttemptSuccess {
   ok: true;
@@ -242,6 +359,7 @@ async function attemptGeminiRequest(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const startedAt = Date.now();
 
   let response: Response;
   try {
@@ -254,36 +372,81 @@ async function attemptGeminiRequest(
   } catch (err) {
     clearTimeout(timeout);
     const isAbort = err instanceof Error && err.name === "AbortError";
-    return {
-      ok: false,
-      classified: {
-        errorClass: "retry-same-key",
-        message: isAbort ? "Gemini request timed out." : "Network failure while calling Gemini.",
-      },
-    };
+    const code: GeminiErrorCode = isAbort ? "GEMINI_TIMEOUT" : "GEMINI_NETWORK_ERROR";
+    const detail = isAbort
+      ? `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`
+      : "Network failure while calling Gemini.";
+    logError(`Error: ${code} — ${detail}`);
+    logGeminiError(model, "n/a", code, detail);
+    return { ok: false, classified: { errorClass: "retry", code, detail } };
   }
   clearTimeout(timeout);
+
+  log(`Status: ${response.status} (${Date.now() - startedAt}ms)`);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const retryAfter = response.headers.get("retry-after");
-    return { ok: false, classified: classifyHttpError(response.status, text, retryAfter) };
+    const classified = classifyHttpError(response.status, text, retryAfter);
+    logError(`Error: ${classified.code} — ${classified.detail}`);
+    logGeminiError(model, response.status, classified.code, classified.detail);
+    return { ok: false, classified };
   }
 
   let json: unknown;
   try {
     json = await response.json();
   } catch {
+    logError("Error: GEMINI_INVALID_RESPONSE — response body was not readable JSON.");
+    logGeminiError(model, 200, "GEMINI_INVALID_RESPONSE", "Response body was not readable JSON.");
     return {
       ok: false,
-      classified: { errorClass: "retry-same-key", message: "Gemini returned an unreadable response body." },
+      classified: {
+        errorClass: "retry",
+        code: "GEMINI_INVALID_RESPONSE",
+        detail: "Gemini returned an unreadable response body.",
+        status: 200,
+      },
     };
   }
 
   return { ok: true, data: json };
 }
 
-// --- Parse + validate a successful response -------------------------------
+// --- Parse + validate a successful response -----------------------------------
+
+/**
+ * Best-effort safe parsing: strips code fences, then — if plain JSON.parse
+ * fails — extracts the first balanced JSON object from the text. Validation
+ * (Zod) still gates everything; parsing fixes never fabricate data.
+ */
+function extractJsonCandidate(rawText: string): string | undefined {
+  const cleaned = rawText
+    .trim()
+    .replace(/^```json/i, "")
+    .replace(/^```/, "")
+    .replace(/```$/, "")
+    .trim();
+
+  try {
+    JSON.parse(cleaned);
+    return cleaned;
+  } catch {
+    // fall through to substring extraction
+  }
+
+  const start = cleaned.indexOf("{");
+  if (start === -1) return undefined;
+  const end = cleaned.lastIndexOf("}");
+  if (end <= start) return undefined;
+  const candidate = cleaned.slice(start, end + 1);
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return undefined;
+  }
+}
 
 function parseAndValidate<T>(
   json: unknown,
@@ -294,16 +457,14 @@ function parseAndValidate<T>(
     return { ok: false, reason: "Gemini response had no text content." };
   }
 
-  const cleaned = rawText
-    .trim()
-    .replace(/^```json/i, "")
-    .replace(/^```/, "")
-    .replace(/```$/, "")
-    .trim();
+  const candidate = extractJsonCandidate(rawText);
+  if (candidate === undefined) {
+    return { ok: false, reason: "Gemini response was not valid JSON." };
+  }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(cleaned);
+    parsed = JSON.parse(candidate);
   } catch {
     return { ok: false, reason: "Gemini response was not valid JSON." };
   }
@@ -316,96 +477,192 @@ function parseAndValidate<T>(
   return { ok: true, data: result.data };
 }
 
-// --- Per-key loop: retries with backoff for transient errors --------------
+// --- Per-key loop: retries with backoff for transient errors ------------------
+
+interface KeyFailure {
+  errorClass: ErrorClass | "budget";
+  code: GeminiErrorCode;
+  message: string;
+}
 
 async function runWithKey<T>(
   configuredKey: ConfiguredKey,
   model: string,
-  input: GenerateJsonInput<T>
-): Promise<{ ok: true; data: T } | { ok: false; errorClass: ErrorClass; message: string }> {
-  let lastMessage = "Unknown error.";
+  input: GenerateJsonInput<T>,
+  ctx: RetryContext
+): Promise<{ ok: true; data: T } | { ok: false; failure: KeyFailure }> {
+  let lastCode: GeminiErrorCode = "GEMINI_INTERNAL_ERROR";
+  let lastDetail = "Unknown error.";
 
-  for (let attempt = 1; attempt <= MAX_RETRIES_PER_KEY + 1; attempt++) {
-    log(`Attempt ${attempt} using ${configuredKey.label}`);
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    if (Date.now() >= ctx.deadline) {
+      logError(`Error: budget exhausted before attempt ${attempt} on ${configuredKey.label}.`);
+      return {
+        ok: false,
+        failure: { errorClass: "budget", code: lastCode, message: lastDetail },
+      };
+    }
+
+    log(`Attempt: ${attempt} (${configuredKey.label})`);
     const outcome = await attemptGeminiRequest(configuredKey, model, input);
 
     if (outcome.ok) {
       const validated = parseAndValidate(outcome.data, input.schema);
       if (validated.ok) {
-        log(`Request succeeded using ${configuredKey.label}`);
+        log(`Success on ${configuredKey.label}`);
         return { ok: true, data: validated.data };
       }
 
-      // A malformed/invalid response isn't a provider outage, but it's
-      // also not necessarily this key's fault — worth one retry on the
-      // same key (generation is non-deterministic) before failing over.
-      lastMessage = validated.reason;
-      log(`${configuredKey.label} returned an invalid response: ${validated.reason}`);
-      if (attempt <= MAX_RETRIES_PER_KEY) {
-        const delay = backoffDelayMs(attempt);
-        log(`Retrying ${configuredKey.label} in ~${Math.round(delay)}ms`);
-        await sleep(delay);
-        continue;
+      lastCode = "GEMINI_INVALID_RESPONSE";
+      lastDetail = validated.reason;
+      logError(`Error: GEMINI_INVALID_RESPONSE — ${validated.reason}`);
+    } else {
+      const { errorClass, code, detail, retryAfterMs } = outcome.classified;
+      lastCode = code;
+      lastDetail = detail;
+
+      if (errorClass === "fatal") {
+        return { ok: false, failure: { errorClass: "fatal", code, message: detail } };
       }
-      return { ok: false, errorClass: "failover-now", message: lastMessage };
-    }
 
-    const { errorClass, message, retryAfterMs } = outcome.classified;
-    lastMessage = message;
-    log(`${configuredKey.label} -> ${message}`);
+      if (errorClass === "failover") {
+        log(`Not retrying ${configuredKey.label} (${code}) — trying next key if available.`);
+        return { ok: false, failure: { errorClass: "failover", code, message: detail } };
+      }
 
-    if (errorClass === "fatal") {
-      return { ok: false, errorClass, message };
-    }
+      // Transient: stop early if there are no retries left in this request's budget.
+      if (attempt > MAX_RETRIES) {
+        logError(`Error: ${code} — retries exhausted on ${configuredKey.label}.`);
+        return { ok: false, failure: { errorClass: "failover", code, message: detail } };
+      }
 
-    if (errorClass === "failover-now") {
-      log(`Switching away from ${configuredKey.label} (non-retryable on this key)`);
-      return { ok: false, errorClass, message };
-    }
+      const retry = attempt; // the retry that is about to run
+      const delay = backoffDelayMs(retry, retryAfterMs);
 
-    // retry-same-key
-    if (attempt <= MAX_RETRIES_PER_KEY) {
-      const delay = retryAfterMs ?? backoffDelayMs(attempt);
-      log(`Retrying ${configuredKey.label} in ~${Math.round(delay)}ms`);
+      if (Date.now() + delay >= ctx.deadline) {
+        logError(`Error: ${code} — no budget left for retry ${retry}/${MAX_RETRIES}.`);
+        return { ok: false, failure: { errorClass: "budget", code, message: detail } };
+      }
+
+      const progress: ApiProgressEvent = {
+        retry,
+        maxRetries: MAX_RETRIES,
+        code,
+        message: RETRY_MESSAGES[code] ?? ERROR_MESSAGES[code],
+        delayMs: delay,
+      };
+      try {
+        ctx.onProgress?.(progress);
+      } catch {
+        // a broken progress callback must never break the request itself
+      }
+
+      log(`Retrying in ${formatSeconds(delay)} (retry ${retry}/${MAX_RETRIES})`);
       await sleep(delay);
       continue;
     }
 
-    log(`${configuredKey.label} exhausted its retries — switching to next key`);
-    return { ok: false, errorClass: "failover-now", message: lastMessage };
+    // Invalid response path: allow a controlled retry, then fail over.
+    if (attempt > MAX_RETRIES) {
+      return {
+        ok: false,
+        failure: { errorClass: "failover", code: "GEMINI_INVALID_RESPONSE", message: lastDetail },
+      };
+    }
+
+    const delay = backoffDelayMs(attempt);
+    if (Date.now() + delay >= ctx.deadline) {
+      logError(`Error: GEMINI_INVALID_RESPONSE — no budget left for retry.`);
+      return {
+        ok: false,
+        failure: { errorClass: "budget", code: "GEMINI_INVALID_RESPONSE", message: lastDetail },
+      };
+    }
+
+    try {
+      ctx.onProgress?.({
+        retry: attempt,
+        maxRetries: MAX_RETRIES,
+        code: "GEMINI_INVALID_RESPONSE",
+        message: RETRY_MESSAGES.GEMINI_INVALID_RESPONSE,
+        delayMs: delay,
+      });
+    } catch {
+      // ignore progress callback failures
+    }
+
+    log(`Retrying in ${formatSeconds(delay)} (retry ${attempt}/${MAX_RETRIES}) — invalid response`);
+    await sleep(delay);
   }
 
-  return { ok: false, errorClass: "failover-now", message: lastMessage };
+  return { ok: false, failure: { errorClass: "failover", code: lastCode, message: lastDetail } };
 }
 
-// --- Try every configured key against one model ---------------------------
+// --- Try every configured key against one model --------------------------------
+
+/**
+ * Which failure to surface when keys fail differently. The most specific,
+ * most actionable code wins so users never see a generic message when a
+ * precise cause is known.
+ */
+const CODE_PRIORITY: GeminiErrorCode[] = [
+  "MISSING_GEMINI_API_KEY",
+  "GEMINI_MODEL_NOT_FOUND",
+  "GEMINI_AUTH_FAILED",
+  "GEMINI_ACCESS_DENIED",
+  "GEMINI_RATE_LIMITED",
+  "GEMINI_BAD_REQUEST",
+  "GEMINI_INVALID_RESPONSE",
+  "GEMINI_TIMEOUT",
+  "GEMINI_NETWORK_ERROR",
+  "GEMINI_SERVICE_UNAVAILABLE",
+  "GEMINI_INTERNAL_ERROR",
+];
+
+function mergeFailureCodes(codes: GeminiErrorCode[]): GeminiErrorCode {
+  if (codes.length === 0) return "GEMINI_INTERNAL_ERROR";
+  const unique = new Set(codes);
+  if (unique.size === 1) return codes[0];
+  for (const code of CODE_PRIORITY) {
+    if (unique.has(code)) return code;
+  }
+  return "GEMINI_SERVICE_UNAVAILABLE";
+}
 
 interface AllKeysOutcome<T> {
   ok: boolean;
   data?: T;
   fatal: boolean;
-  failures: string[];
+  budgetExhausted: boolean;
+  failures: GeminiErrorCode[];
 }
 
 async function attemptAllKeysForModel<T>(
   keys: ConfiguredKey[],
   model: string,
-  input: GenerateJsonInput<T>
+  input: GenerateJsonInput<T>,
+  ctx: RetryContext
 ): Promise<AllKeysOutcome<T>> {
-  const failures: string[] = [];
+  const failures: GeminiErrorCode[] = [];
 
   for (let i = 0; i < keys.length; i++) {
     const configuredKey = keys[i];
-    const result = await runWithKey(configuredKey, model, input);
+    const result = await runWithKey(configuredKey, model, input, ctx);
 
     if (result.ok) {
-      return { ok: true, data: result.data, fatal: false, failures };
+      return { ok: true, data: result.data, fatal: false, budgetExhausted: false, failures };
     }
 
-    failures.push(`${configuredKey.label}: ${result.message}`);
+    const { errorClass, code } = result.failure;
+    failures.push(code);
+    logError(`Error on ${configuredKey.label}: ${code} — ${result.failure.message}`);
 
-    if (result.errorClass === "fatal") {
-      return { ok: false, fatal: true, failures };
+    if (errorClass === "fatal") {
+      return { ok: false, fatal: true, budgetExhausted: false, failures };
+    }
+
+    if (errorClass === "budget") {
+      return { ok: false, fatal: false, budgetExhausted: true, failures };
     }
 
     if (i < keys.length - 1) {
@@ -413,27 +670,25 @@ async function attemptAllKeysForModel<T>(
     }
   }
 
-  return { ok: false, fatal: false, failures };
+  return { ok: false, fatal: false, budgetExhausted: false, failures };
 }
 
-// --- Public entry point ----------------------------------------------------
+// --- Public entry point --------------------------------------------------------
 
 /**
  * Runs the configured Gemini key(s) against one prompt (+ optional
- * images), failing over to the next key on transient errors, and
- * returns a Zod-validated result.
+ * images), retrying transient failures (408/429/500/502/503/504) with
+ * jittered exponential backoff (1s, 2s, 4s, 8s — up to 4 retries), then
+ * failing over to the next key, and finally to GEMINI_MODEL_FALLBACK if
+ * configured.
  *
- * If GEMINI_MODEL_FALLBACK is set and EVERY key fails against the
- * primary GEMINI_MODEL for a non-fatal reason (e.g. sustained 503s —
- * the whole model tier is under demand pressure, not just one key),
- * the full key list is tried again against the fallback model before
- * giving up. This is separate from key failover: it's model failover,
- * for the case where the bottleneck is Google's capacity for that
- * specific model rather than any one API key.
+ * `input.onProgress` is called before every retry so routes can stream
+ * "Retry attempt N/4" updates to the UI.
  *
- * Throws GeminiError — and never fabricates a result — if every key
- * fails against every configured model, or if the failure is a fatal
- * (non-key-specific) configuration problem such as an unknown model.
+ * Throws GeminiError — and never fabricates a result — with a precise
+ * error code (see GeminiErrorCode) if every key fails against every
+ * configured model, or if the failure is a fatal configuration problem
+ * such as an unknown model.
  */
 export async function generateJson<T>(input: GenerateJsonInput<T>): Promise<T> {
   const keys = getGeminiKeys();
@@ -444,44 +699,47 @@ export async function generateJson<T>(input: GenerateJsonInput<T>): Promise<T> {
     throw new GeminiNotConfiguredError();
   }
 
-  log(`Trying model "${model}" across ${keys.length} configured key(s)`);
-  const primaryOutcome = await attemptAllKeysForModel(keys, model, input);
+  const ctx: RetryContext = { deadline: Date.now() + TOTAL_BUDGET_MS, onProgress: input.onProgress };
+
+  log("Request started");
+  log(`Model: ${model} (${keys.length} key(s))`);
+
+  const primaryOutcome = await attemptAllKeysForModel(keys, model, input, ctx);
 
   if (primaryOutcome.ok && primaryOutcome.data !== undefined) {
     return primaryOutcome.data;
   }
 
-  if (primaryOutcome.fatal) {
-    logError(
-      `Fatal configuration error on model "${model}" — not attempting further keys or models: ${primaryOutcome.failures.join(" | ")}`
-    );
-    throw new GeminiError(
-      "The AI provider is misconfigured (unknown model). Please check the server configuration.",
-      primaryOutcome.failures
-    );
+  const primaryCode = mergeFailureCodes(primaryOutcome.failures);
+
+  function fail(failedModel: string, code: GeminiErrorCode): never {
+    logGeminiError(failedModel, "final", code, ERROR_MESSAGES[code]);
+    throw new GeminiError(ERROR_MESSAGES[code], code);
   }
 
-  const allFailures = [...primaryOutcome.failures];
+  if (primaryOutcome.fatal) {
+    logError(`Fatal configuration error on model "${model}" — not retrying: ${primaryCode}`);
+    fail(model, primaryCode);
+  }
+
+  if (primaryOutcome.budgetExhausted) {
+    logError(`Request budget exhausted on model "${model}": ${primaryCode}`);
+    fail(model, primaryCode);
+  }
 
   if (fallbackModel && fallbackModel !== model) {
     logError(`All keys failed on model "${model}" — trying fallback model "${fallbackModel}"`);
-    const fallbackOutcome = await attemptAllKeysForModel(keys, fallbackModel, input);
+    const fallbackOutcome = await attemptAllKeysForModel(keys, fallbackModel, input, ctx);
 
     if (fallbackOutcome.ok && fallbackOutcome.data !== undefined) {
       return fallbackOutcome.data;
     }
 
-    allFailures.push(...fallbackOutcome.failures.map((f) => `[fallback model] ${f}`));
-
-    if (fallbackOutcome.fatal) {
-      logError(`Fatal configuration error on fallback model "${fallbackModel}": ${fallbackOutcome.failures.join(" | ")}`);
-      throw new GeminiError(
-        "The AI provider is misconfigured (unknown fallback model). Please check the server configuration.",
-        allFailures
-      );
-    }
+    const fallbackCode = mergeFailureCodes(fallbackOutcome.failures);
+    logError(`All keys failed on fallback model "${fallbackModel}": ${fallbackCode}`);
+    fail(fallbackModel, fallbackCode);
   }
 
-  logError(`All configured key(s) and model(s) failed: ${allFailures.join(" | ")}`);
-  throw new GeminiError("All configured AI providers are temporarily unavailable.", allFailures);
+  logError(`All configured key(s) failed: ${primaryCode}`);
+  fail(model, primaryCode);
 }

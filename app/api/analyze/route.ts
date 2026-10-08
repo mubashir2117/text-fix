@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES } from "@/lib/validation";
-import { analyzeImageWithAi, AiAnalysisError } from "@/lib/ai";
+import { ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_LABEL } from "@/lib/validation";
+import { analyzeImageWithAi } from "@/lib/ai";
 import { hasGeminiKey } from "@/lib/gemini";
+import { apiFailure, apiFailureFrom, jsonFailure, jsonSuccess, sseResponse } from "@/lib/api-response";
+import type { ApiProgressEvent } from "@/lib/errors";
 import type { AnalysisResult } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -26,38 +28,34 @@ function isRateLimited(key: string): boolean {
 export async function POST(req: NextRequest) {
   // Safe server-side configuration check — never reveals the key itself.
   if (!hasGeminiKey()) {
-    return NextResponse.json(
-      { error: "Gemini API key is not configured.", code: "missing_api_key" },
-      { status: 503 }
-    );
+    return jsonFailure(apiFailure("MISSING_GEMINI_API_KEY"));
   }
 
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
   if (isRateLimited(ip)) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a moment and try again." },
-      { status: 429 }
-    );
+    return jsonFailure(apiFailure("RATE_LIMITED"));
   }
 
   let formData: FormData;
   try {
     formData = await req.formData();
   } catch {
-    return NextResponse.json({ error: "We couldn't read that upload. Please try again." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "We couldn't read that upload. Please try again."));
   }
 
   const file = formData.get("file");
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "No image file was provided." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "No image file was provided."));
   }
 
   if (!ACCEPTED_MIME_TYPES.includes(file.type)) {
-    return NextResponse.json({ error: "Please upload a JPG, PNG, or WEBP image." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "Please upload a JPG, PNG, or WEBP image."));
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    return NextResponse.json({ error: "This image is too large. Please upload a smaller file." }, { status: 400 });
+    return jsonFailure(
+      apiFailure("INVALID_UPLOAD", `This image is too large. Please upload an image under ${MAX_FILE_SIZE_LABEL}.`)
+    );
   }
 
   let base64Data: string;
@@ -65,13 +63,17 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     base64Data = buffer.toString("base64");
   } catch {
-    return NextResponse.json({ error: "We couldn't process that image. Please try a different file." }, { status: 400 });
+    return jsonFailure(
+      apiFailure("INVALID_UPLOAD", "We couldn't process that image. Please try a different file.")
+    );
   }
 
-  try {
-    const analysis = await analyzeImageWithAi({ base64Data, mimeType: file.type });
+  const wantsStream = formData.get("stream") === "1";
 
-    const result: AnalysisResult = {
+  const runAnalysis = async (onProgress?: (event: ApiProgressEvent) => void): Promise<AnalysisResult> => {
+    const analysis = await analyzeImageWithAi({ base64Data, mimeType: file.type, onProgress });
+
+    return {
       overallStatus: analysis.overallStatus,
       confidence: analysis.confidence,
       qualityScore: analysis.qualityScore,
@@ -86,6 +88,34 @@ export async function POST(req: NextRequest) {
       keywordAnalysis: analysis.keywordAnalysis,
       caseAnalysis: analysis.caseAnalysis,
     };
+  };
+
+  // Streaming mode: retry progress ("Retry attempt N/4") is pushed to the
+  // client as server-sent events while the Gemini call runs.
+  if (wantsStream) {
+    return sseResponse(async (emit) => {
+      try {
+        const result = await runAnalysis((event) => emit("progress", event));
+
+        if (!result.hasReadableText) {
+          emit("result", {
+            success: true,
+            result,
+            error: "We couldn't confidently detect readable text in this design.",
+          });
+          return;
+        }
+
+        emit("result", { success: true, result });
+      } catch (err) {
+        const failure = apiFailureFrom(err);
+        emit("error", { ...failure.payload, status: failure.status });
+      }
+    });
+  }
+
+  try {
+    const result = await runAnalysis();
 
     if (!result.hasReadableText) {
       return NextResponse.json(
@@ -97,19 +127,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ result }, { status: 200 });
+    return jsonSuccess(result);
   } catch (err) {
-    if (err instanceof AiAnalysisError) {
-      console.error("AI analysis failed:", err.message, err.cause);
-      return NextResponse.json(
-        { error: "Something went wrong while analyzing your design. Please try again." },
-        { status: 502 }
-      );
-    }
-    console.error("Unexpected error in /api/analyze:", err);
-    return NextResponse.json(
-      { error: "Something went wrong while analyzing your design. Please try again." },
-      { status: 500 }
-    );
+    return jsonFailure(apiFailureFrom(err));
   }
 }

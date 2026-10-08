@@ -1,5 +1,6 @@
 import { RecreateResultSchema, type PostFormatId, type RecreateResult } from "./validation";
-import { generateJson, GeminiError, GeminiNotConfiguredError } from "./gemini";
+import { generateJson, GeminiError } from "./gemini";
+import { ApiError, type ApiErrorCode, type ApiProgressEvent } from "./errors";
 import type { RecreateMode } from "./types";
 
 export type { RecreateMode } from "./types";
@@ -26,9 +27,9 @@ export type { RecreateMode } from "./types";
  * random new design, and never invent facts.
  */
 
-export class RecreateError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
-    super(message);
+export class RecreateError extends ApiError {
+  constructor(message: string, code: ApiErrorCode, cause?: unknown) {
+    super(message, code, cause);
     this.name = "RecreateError";
   }
 }
@@ -208,6 +209,8 @@ export interface RecreatePostInput {
   previous?: RecreateResult;
   /** Free-form focus notes for "improve" mode. */
   improvements?: string[];
+  /** Notified before each Gemini retry so routes can stream progress to the UI. */
+  onProgress?: (event: ApiProgressEvent) => void;
 }
 
 function buildUserPrompt(input: RecreatePostInput): string {
@@ -235,8 +238,10 @@ function buildUserPrompt(input: RecreatePostInput): string {
  * Calls Gemini (via the shared lib/gemini.ts transport) to analyze and
  * recreate the uploaded post, and returns the Zod-validated result.
  *
- * Throws RecreateError with a safe, generic message — never a raw
- * Gemini error object — so routes can surface user-friendly text.
+ * Throws RecreateError carrying the precise error code from
+ * GeminiErrorCode — with a user-safe message — so the route can return
+ * { success: false, error: { code, message } } without revealing any
+ * provider internals.
  */
 export async function recreatePostWithAi(input: RecreatePostInput): Promise<RecreateResult> {
   try {
@@ -246,16 +251,14 @@ export async function recreatePostWithAi(input: RecreatePostInput): Promise<Recr
       images: [{ base64Data: input.base64Data, mimeType: input.mimeType }],
       schema: RecreateResultSchema,
       temperature: input.mode === "regenerate" ? 0.6 : 0.4,
+      onProgress: input.onProgress,
     });
   } catch (err) {
-    if (err instanceof GeminiNotConfiguredError) {
-      throw new RecreateError("Gemini API key is not configured.", err.cause);
-    }
     if (err instanceof GeminiError) {
-      // Log the detail server-side only; the message sent to the client
-      // is generic (routes map it) so no internals are revealed.
-      console.error("[recreate] Gemini request failed:", err.message);
-      throw new RecreateError("Unable to analyze the design right now.", err.cause);
+      // `err.message` is already a user-safe, code-specific message; the
+      // log line adds context server-side only.
+      console.error(`[recreate] Gemini request failed: ${err.code}`);
+      throw new RecreateError(err.message, err.code, err.cause);
     }
     throw err;
   }

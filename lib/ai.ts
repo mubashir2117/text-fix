@@ -1,5 +1,6 @@
 import { AiAnalysisSchema, type AiAnalysis } from "./validation";
-import { generateJson, GeminiError, GeminiNotConfiguredError } from "./gemini";
+import { generateJson, GeminiError } from "./gemini";
+import { ApiError, type ApiErrorCode, type ApiProgressEvent } from "./errors";
 
 /**
  * ---------------------------------------------------------------------
@@ -23,9 +24,9 @@ import { generateJson, GeminiError, GeminiNotConfiguredError } from "./gemini";
  * lib/gemini.ts transport with its own prompt and schema.
  */
 
-export class AiAnalysisError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
-    super(message);
+export class AiAnalysisError extends ApiError {
+  constructor(message: string, code: ApiErrorCode, cause?: unknown) {
+    super(message, code, cause);
     this.name = "AiAnalysisError";
   }
 }
@@ -94,6 +95,8 @@ If no readable text is present in the image at all, set hasReadableText to false
 interface AnalyzeImageInput {
   base64Data: string;
   mimeType: string;
+  /** Notified before each Gemini retry so routes can stream progress to the UI. */
+  onProgress?: (event: ApiProgressEvent) => void;
 }
 
 /**
@@ -102,10 +105,14 @@ interface AnalyzeImageInput {
  * timeouts, model fallback, JSON parsing) live in lib/gemini.ts.
  *
  * Throws AiAnalysisError — and never fabricates a result — on any
- * failure, including "The AI provider is not configured on the server."
- * when no GEMINI_API_KEY / GEMINI_API_KEY_n is set.
+ * failure, carrying the precise error code from GeminiErrorCode so the
+ * route can return { success: false, error: { code, message } }.
  */
-export async function analyzeImageWithAi({ base64Data, mimeType }: AnalyzeImageInput): Promise<AiAnalysis> {
+export async function analyzeImageWithAi({
+  base64Data,
+  mimeType,
+  onProgress,
+}: AnalyzeImageInput): Promise<AiAnalysis> {
   try {
     return await generateJson<AiAnalysis>({
       systemInstruction: SYSTEM_PROMPT,
@@ -113,13 +120,12 @@ export async function analyzeImageWithAi({ base64Data, mimeType }: AnalyzeImageI
       images: [{ base64Data, mimeType }],
       schema: AiAnalysisSchema,
       temperature: 0.2,
+      onProgress,
     });
   } catch (err) {
-    if (err instanceof GeminiNotConfiguredError) {
-      throw new AiAnalysisError("The AI provider is not configured on the server.", err.cause);
-    }
     if (err instanceof GeminiError) {
-      throw new AiAnalysisError(err.message, err.cause);
+      // `err.message` is already a user-safe, code-specific message.
+      throw new AiAnalysisError(err.message, err.code, err.cause);
     }
     throw err;
   }

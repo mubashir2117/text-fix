@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { UploadCloud, ImageUp } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { validateImageFile } from "@/lib/validation";
+import { MAX_FILE_SIZE_LABEL, validateImageFile } from "@/lib/validation";
 import { toast } from "sonner";
 
 interface UploadDropzoneProps {
@@ -77,7 +77,7 @@ export function UploadDropzone({ onFileSelected }: UploadDropzoneProps) {
           Drag and drop a post, ad, banner, or screenshot — or click to browse.
         </p>
       </div>
-      <p className="text-xs text-ink-faint">JPG, PNG, or WEBP · up to 10MB</p>
+      <p className="text-xs text-ink-faint">JPG, PNG, or WEBP · up to {MAX_FILE_SIZE_LABEL}</p>
     </div>
   );
 }

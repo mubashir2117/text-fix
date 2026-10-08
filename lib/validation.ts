@@ -425,7 +425,16 @@ export type RecreateResult = z.infer<typeof RecreateResultSchema>;
 // --- File validation -------------------------------------------------
 
 export const ACCEPTED_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB, configurable
+
+/**
+ * Vercel rejects request bodies larger than 4.5 MB BEFORE the serverless
+ * function runs (platform-level 413). The cap therefore matches that
+ * limit exactly: without it, a 5-10 MB image would upload fine on
+ * localhost but fail in production with a platform error instead of our
+ * JSON error response.
+ */
+export const MAX_FILE_SIZE_BYTES = Math.floor(4.5 * 1024 * 1024);
+export const MAX_FILE_SIZE_LABEL = "4.5 MB";
 
 export interface FileValidationResult {
   valid: boolean;
@@ -437,7 +446,7 @@ export function validateImageFile(file: { type: string; size: number }): FileVal
     return { valid: false, error: "Please upload a JPG, PNG, or WEBP image." };
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    return { valid: false, error: "This image is too large. Please upload a smaller file." };
+    return { valid: false, error: `This image is too large. Please upload an image under ${MAX_FILE_SIZE_LABEL}.` };
   }
   if (file.size === 0) {
     return { valid: false, error: "That file looks empty. Please choose a different image." };

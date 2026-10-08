@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, PostFormatEnum, RecreateResultSchema } from "@/lib/validation";
+import { ACCEPTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_LABEL, PostFormatEnum, RecreateResultSchema } from "@/lib/validation";
 import { hasGeminiKey } from "@/lib/gemini";
-import { RecreateError, recreatePostWithAi, type RecreateMode } from "@/lib/recreate";
+import { recreatePostWithAi, type RecreateMode } from "@/lib/recreate";
 import { clampCustomDimension, getPostFormat } from "@/lib/formats";
+import { apiFailure, apiFailureFrom, jsonFailure, jsonSuccess, sseResponse } from "@/lib/api-response";
+import type { ApiProgressEvent } from "@/lib/errors";
 import type { PostFormatId, RecreateResult } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -23,11 +25,6 @@ function isRateLimited(key: string): boolean {
   requestLog.set(key, timestamps);
   return timestamps.length > RATE_LIMIT_MAX_REQUESTS;
 }
-
-const MISSING_KEY_PAYLOAD = {
-  error: "Gemini API key is not configured.",
-  code: "missing_api_key",
-} as const;
 
 function parseMode(value: FormDataEntryValue | null): RecreateMode {
   return value === "regenerate" || value === "improve" ? value : "create";
@@ -72,35 +69,34 @@ function parseImprovements(value: FormDataEntryValue | null): string[] {
 export async function POST(req: NextRequest) {
   // Safe server-side configuration check — never reveals the key itself.
   if (!hasGeminiKey()) {
-    return NextResponse.json(MISSING_KEY_PAYLOAD, { status: 503 });
+    return jsonFailure(apiFailure("MISSING_GEMINI_API_KEY"));
   }
 
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
   if (isRateLimited(ip)) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a moment and try again." },
-      { status: 429 }
-    );
+    return jsonFailure(apiFailure("RATE_LIMITED"));
   }
 
   let formData: FormData;
   try {
     formData = await req.formData();
   } catch {
-    return NextResponse.json({ error: "We couldn't read that upload. Please try again." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "We couldn't read that upload. Please try again."));
   }
 
   const file = formData.get("file");
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "No image file was provided." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "No image file was provided."));
   }
 
   if (!ACCEPTED_MIME_TYPES.includes(file.type)) {
-    return NextResponse.json({ error: "Please upload a JPG, PNG, or WEBP image." }, { status: 400 });
+    return jsonFailure(apiFailure("INVALID_UPLOAD", "Please upload a JPG, PNG, or WEBP image."));
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    return NextResponse.json({ error: "This image is too large. Please upload a smaller file." }, { status: 400 });
+    return jsonFailure(
+      apiFailure("INVALID_UPLOAD", `This image is too large. Please upload an image under ${MAX_FILE_SIZE_LABEL}.`)
+    );
   }
 
   const formatParse = PostFormatEnum.safeParse(formData.get("format"));
@@ -121,10 +117,14 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     base64Data = buffer.toString("base64");
   } catch {
-    return NextResponse.json({ error: "We couldn't process that image. Please try a different file." }, { status: 400 });
+    return jsonFailure(
+      apiFailure("INVALID_UPLOAD", "We couldn't process that image. Please try a different file.")
+    );
   }
 
-  try {
+  const wantsStream = formData.get("stream") === "1";
+
+  const runRecreation = async (onProgress?: (event: ApiProgressEvent) => void): Promise<RecreateResult> => {
     const result = await recreatePostWithAi({
       base64Data,
       mimeType: file.type,
@@ -135,35 +135,46 @@ export async function POST(req: NextRequest) {
       variant: parseVariant(formData.get("variant")),
       previous: parsePrevious(formData.get("previous")),
       improvements: parseImprovements(formData.get("improvements")),
+      onProgress,
     });
 
     // The requested format always wins over anything the model echoed.
     result.format = format;
+    return result;
+  };
+
+  // Streaming mode: retry progress ("Retry attempt N/4") is pushed to the
+  // client as server-sent events while the Gemini call runs.
+  if (wantsStream) {
+    return sseResponse(async (emit) => {
+      try {
+        const result = await runRecreation((event) => emit("progress", event));
+
+        const hasText = Object.values(result.extractedText ?? {}).some((value) => value.trim().length > 0);
+        if (!hasText) {
+          const failure = apiFailure("NO_READABLE_TEXT");
+          emit("error", { ...failure.payload, status: failure.status });
+          return;
+        }
+
+        emit("result", { success: true, result });
+      } catch (err) {
+        const failure = apiFailureFrom(err);
+        emit("error", { ...failure.payload, status: failure.status });
+      }
+    });
+  }
+
+  try {
+    const result = await runRecreation();
 
     const hasText = Object.values(result.extractedText ?? {}).some((value) => value.trim().length > 0);
     if (!hasText) {
-      return NextResponse.json(
-        { error: "We couldn't confidently detect readable text in this design." },
-        { status: 422 }
-      );
+      return jsonFailure(apiFailure("NO_READABLE_TEXT"));
     }
 
-    return NextResponse.json({ result }, { status: 200 });
+    return jsonSuccess(result);
   } catch (err) {
-    if (err instanceof RecreateError) {
-      if (err.message === "Gemini API key is not configured.") {
-        return NextResponse.json(MISSING_KEY_PAYLOAD, { status: 503 });
-      }
-      console.error("[recreate] request failed:", err.message, err.cause);
-      return NextResponse.json(
-        { error: "Unable to analyze the design right now. Please try again." },
-        { status: 502 }
-      );
-    }
-    console.error("Unexpected error in /api/recreate:", err);
-    return NextResponse.json(
-      { error: "Unable to analyze the design right now. Please try again." },
-      { status: 500 }
-    );
+    return jsonFailure(apiFailureFrom(err));
   }
 }

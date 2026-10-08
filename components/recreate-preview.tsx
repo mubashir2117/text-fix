@@ -16,7 +16,9 @@ import {
 } from "lucide-react";
 import { RecreatedPost } from "@/components/recreated-post";
 import { TextReport } from "@/components/text-report";
+import { RetryNotice } from "@/components/retry-notice";
 import { Button } from "@/components/ui/button";
+import type { ApiProgressEvent } from "@/lib/errors";
 import {
   buildExportFilename,
   downloadBlob,
@@ -33,6 +35,8 @@ interface RecreatePreviewProps {
   recreation: NormalizedRecreation;
   selection: RecreateSelection;
   busy: RecreateBusyAction;
+  /** Live retry progress while the server retries transient Gemini errors. */
+  retry?: ApiProgressEvent | null;
   canReset: boolean;
   onRegenerate: () => void;
   onImprove: () => void;
@@ -59,6 +63,7 @@ export function RecreatePreview({
   recreation,
   selection,
   busy,
+  retry,
   canReset,
   onRegenerate,
   onImprove,
@@ -246,11 +251,14 @@ export function RecreatePreview({
         </div>
 
         {(busy || downloading) && (
-          <p role="status" aria-live="polite" className="mt-2.5 text-sm text-pen">
-            {downloading
-              ? "Rendering your file..."
-              : BUSY_LABEL[busy as Exclude<RecreateBusyAction, null>]}
-          </p>
+          <div className="mt-2.5">
+            <p role="status" aria-live="polite" className="text-sm text-pen">
+              {downloading
+                ? "Rendering your file..."
+                : BUSY_LABEL[busy as Exclude<RecreateBusyAction, null>]}
+            </p>
+            {!downloading && <RetryNotice retry={retry} />}
+          </div>
         )}
       </div>
 
